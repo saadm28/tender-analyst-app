@@ -1,0 +1,21 @@
+# Virtual environments
+.venv/
+tender-project/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Files
+.DS_Store
+.env
+*.pdf
+*.log
+
+# IDE
+.vscode/
+.idea/
