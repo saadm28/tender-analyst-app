@@ -21,6 +21,12 @@ from typing import Tuple, List
 
 import streamlit as st
 
+# Fix imports for Streamlit Cloud deployment
+# Add current directory to path to find core modules
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 # Core modules
 from core.llm import respond, embed_texts
 from core.parsing import load_document, load_commercial_data_as_json, chunk_text
