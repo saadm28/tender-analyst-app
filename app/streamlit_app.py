@@ -27,10 +27,28 @@ from core.reporting import build_markdown, build_pdf_report
 
 
 # Add Debug Sidebar
-# import traceback, time, uuid, json, tempfile, os
-# DEBUG = bool(st.secrets.get("DEBUG", False)) or st.sidebar.toggle("Debug mode", value=False, help="Show internals, tracebacks, and raw LLM outputs")
-# if DEBUG:
-#     st.sidebar.info("Debug mode is ON")
+import traceback, time, uuid, json, tempfile, os
+
+# Safe debugging toggle that works locally and on Streamlit Cloud
+try:
+    # Try to get from secrets first (Streamlit Cloud)
+    import streamlit as st
+    DEBUG = bool(st.secrets.get("DEBUG", False))
+except Exception:
+    # Fallback for local (no secrets)
+    DEBUG = False
+
+# Add sidebar toggle
+DEBUG = DEBUG or st.sidebar.toggle("Debug mode", value=False, help="Show internals, tracebacks, and raw LLM outputs")
+if DEBUG:
+    st.sidebar.info("🐛 Debug mode is ON")
+    st.sidebar.write("**Debug Info:**")
+    st.sidebar.write(f"- Python version: {os.sys.version}")
+    st.sidebar.write(f"- Streamlit version: {st.__version__}")
+    st.sidebar.write(f"- Session state keys: {list(st.session_state.keys())}")
+    st.sidebar.divider()
+else:
+    st.sidebar.info("Debug mode is OFF")
 
 
 
@@ -146,9 +164,18 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
         return True
 
     def _do():
+        if DEBUG:
+            st.sidebar.write("🔄 Building chunks...")
+            start_time = time.time()
+            
         chunks, companies = make_chunks_from_uploads(uploaded_docs)
         if not chunks:
             raise RuntimeError("No readable text found in the uploaded files.")
+        
+        if DEBUG:
+            chunk_time = time.time() - start_time
+            st.sidebar.write(f"📄 Chunks created in {chunk_time:.2f}s: {len(chunks)} total")
+            st.sidebar.write(f"🏢 Companies: {companies}")
         
         # Enhanced debugging: examine actual chunk format
         print(f"DEBUG: Total chunks created: {len(chunks)}")
@@ -179,7 +206,21 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
         for company, indices in by_company.items():
             print(f"- {company}: {len(indices)} matches")
         
+        if DEBUG:
+            st.sidebar.write("📊 Chunk distribution:")
+            for c in companies:
+                count = len(by_company.get(c, []))
+                st.sidebar.write(f"  • {c}: {count} chunks")
+            
+            embed_start = time.time()
+        
         index = build_index_cached(tuple(chunks))
+        
+        if DEBUG:
+            embed_time = time.time() - embed_start
+            st.sidebar.write(f"🔗 Embeddings built in {embed_time:.2f}s")
+            st.sidebar.write(f"📊 Index vectors: {index.ntotal if hasattr(index, 'ntotal') else 'N/A'}")
+        
         st.session_state.chatbot_docs = {"chunks": chunks, "index": index, "companies": companies, "kb_key": current_key, "by_company": by_company}
         return True
 
@@ -316,23 +357,36 @@ def generate_report_tab():
                     if ud["commercial"]:
                         commercial_filename = ud["commercial"]["name"].lower()
                         try:
+                            if DEBUG:
+                                st.sidebar.write(f"💰 Processing commercial: {ud['commercial']['name']}")
+                            
                             if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
                                 # Use structured JSON parsing for spreadsheet files
                                 commercial_data = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
+                                if DEBUG:
+                                    st.sidebar.write(f"✅ Commercial loaded as JSON")
                                 print(f"DEBUG: Loaded commercial data as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
                             else:
                                 # Fallback to text parsing for other file types
                                 commercial_data = load_document(ud["commercial"]["content"], ud["commercial"]["name"])
+                                if DEBUG:
+                                    st.sidebar.write(f"✅ Commercial loaded as text: {len(str(commercial_data))} chars")
                                 print(f"DEBUG: Loaded commercial data as text from {ud['commercial']['name']} - type: {type(commercial_data)}, length: {len(str(commercial_data))}")
                                 # Ensure it's a string
                                 if not isinstance(commercial_data, str):
                                     print(f"WARNING: Commercial data returned {type(commercial_data)}, converting to string")
                                     commercial_data = str(commercial_data)
                         except Exception as e:
-                            st.error(f"Error loading commercial document {ud['commercial']['name']}: {str(e)}")
+                            error_msg = f"Error loading commercial document {ud['commercial']['name']}: {str(e)}"
+                            if DEBUG:
+                                st.sidebar.error(f"❌ {error_msg}")
+                                st.sidebar.text(f"Traceback: {traceback.format_exc()}")
+                            st.error(error_msg)
                             commercial_data = ""
                     else:
                         commercial_data = ""  # Ensure it's a string when no commercial data
+                        if DEBUG:
+                            st.sidebar.write("ℹ️ No commercial document provided")
                         print("DEBUG: No commercial document provided")
 
                     # get_response = lambda p: respond(p, GENERATION_MODEL, 0.1)
@@ -387,7 +441,15 @@ def generate_report_tab():
                     build_kb(ud, show_ui=False)
 
                 except Exception as e:
-                    st.error(f"Error during analysis: {e}")
+                    error_msg = f"Error during analysis: {e}"
+                    if DEBUG:
+                        st.sidebar.error(f"💥 {error_msg}")
+                        st.sidebar.text(f"Traceback:\n{traceback.format_exc()}")
+                        # Also show recent session state for debugging
+                        st.sidebar.write("🔍 Session state at error:")
+                        st.sidebar.write(f"  • Report keys: {list(st.session_state.report.keys())}")
+                        st.sidebar.write(f"  • Upload keys: {list(st.session_state.uploaded_documents.keys())}")
+                    st.error(error_msg)
     else:
         st.info("Upload one RFP and at least one tender to run the analysis.")
 
@@ -479,11 +541,17 @@ def chatbot_tab():
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
+                if DEBUG:
+                    st.sidebar.write("🤔 Processing question...")
+                    question_start = time.time()
+                
                 # Balanced retrieval: get chunks from RFP + each company
                 context_parts = []
                 
                 # Safety check: ensure we have valid chunks and index
                 if not chunks or not index:
+                    if DEBUG:
+                        st.sidebar.warning("⚠️ No chunks or index, using fallback search")
                     context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
                 else:
                     # 1. Get RFP chunks (2-3 relevant chunks)
@@ -493,7 +561,11 @@ def chatbot_tab():
                             rfp_hits = retrieve(question, rfp_chunks, index, embed_texts, k=min(3, len(rfp_chunks)))
                             if rfp_hits["context"]:
                                 context_parts.append("=== RFP REQUIREMENTS ===\n" + rfp_hits["context"])
+                            if DEBUG:
+                                st.sidebar.write(f"📄 RFP chunks: {len(rfp_chunks)} → {len(rfp_hits.get('context', '').split('---')) if rfp_hits.get('context') else 0}")
                         except Exception as e:
+                            if DEBUG:
+                                st.sidebar.error(f"❌ RFP retrieval error: {e}")
                             print(f"DEBUG: Error retrieving RFP chunks: {e}")
                     
                     # 2. Get commercial chunks if relevant
@@ -504,13 +576,19 @@ def chatbot_tab():
                                 comm_hits = retrieve(question, commercial_chunks, index, embed_texts, k=min(2, len(commercial_chunks)))
                                 if comm_hits["context"]:
                                     context_parts.append("=== COMMERCIAL DATA ===\n" + comm_hits["context"])
+                                if DEBUG:
+                                    st.sidebar.write(f"💰 Commercial chunks: {len(commercial_chunks)} found")
                             except Exception as e:
+                                if DEBUG:
+                                    st.sidebar.error(f"❌ Commercial retrieval error: {e}")
                                 print(f"DEBUG: Error retrieving commercial chunks: {e}")
                     
                     # 3. Get balanced chunks per company (2 chunks each)
                     by_company = kb.get("by_company", {})
                     if by_company:
                         context_parts.append("=== COMPANY RESPONSES ===")
+                        company_results = {}
+                        
                         for company in companies:
                             company_indices = by_company.get(company, [])
                             if company_indices:
@@ -523,33 +601,47 @@ def chatbot_tab():
                                             company_context = simple_text_search(question, company_chunks, max_results=2)
                                             if company_context:
                                                 context_parts.append(f"--- {company} ---\n" + company_context)
+                                                company_results[company] = "keyword"
                                             else:
                                                 # Fallback: include first chunk to ensure representation
                                                 context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                                company_results[company] = "fallback"
                                         else:
                                             # Large companies: use semantic search
                                             if index is not None:
                                                 company_hits = retrieve(question, company_chunks, index, embed_texts, k=min(2, len(company_chunks)))
                                                 if company_hits["context"]:
                                                     context_parts.append(f"--- {company} ---\n" + company_hits["context"])
+                                                    company_results[company] = "semantic"
                                                 else:
                                                     # Fallback: include first chunk
                                                     context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                                    company_results[company] = "fallback"
                                 except Exception as e:
+                                    if DEBUG:
+                                        st.sidebar.error(f"❌ Error for {company}: {e}")
                                     print(f"DEBUG: Error retrieving chunks for {company}: {e}")
                                     # Emergency fallback: include at least something for each company
                                     if company_indices:
                                         try:
                                             fallback_chunk = chunks[company_indices[0]]
                                             context_parts.append(f"--- {company} ---\n" + fallback_chunk)
+                                            company_results[company] = "emergency"
                                         except:
-                                            pass
+                                            company_results[company] = "failed"
+                        
+                        if DEBUG:
+                            st.sidebar.write("🏢 Company retrieval:")
+                            for company, method in company_results.items():
+                                st.sidebar.write(f"  • {company}: {method}")
                     
                     # Combine all context parts
                     context = "\n\n".join(context_parts) if context_parts else ""
                     
                     # Fallback to simple search if no context
                     if not context:
+                        if DEBUG:
+                            st.sidebar.warning("⚠️ No context found, using simple search fallback")
                         context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
 
                 # Create company context for the prompt
@@ -568,6 +660,14 @@ Source snippets:
 
 Question: {question}
 """
+                
+                if DEBUG:
+                    retrieval_time = time.time() - question_start
+                    st.sidebar.write(f"⏱️ Retrieval took {retrieval_time:.2f}s")
+                    st.sidebar.write(f"📊 Context: {len(context)} chars, {len(context_parts)} parts")
+                    st.sidebar.write(f"📝 Prompt: {len(prompt)} chars")
+                    
+                    llm_start = time.time()
                 
                 # DEBUG: Print the chatbot prompt being sent to GPT
                 print("=" * 80)
@@ -594,8 +694,20 @@ Question: {question}
                 print("=" * 80)
                 
                 answer = respond(prompt, GENERATION_MODEL, 0.1) or "Something went wrong while generating the answer."
+                
+                if DEBUG:
+                    llm_time = time.time() - llm_start
+                    total_time = time.time() - question_start
+                    st.sidebar.write(f"🧠 LLM took {llm_time:.2f}s")
+                    st.sidebar.write(f"⏱️ Total: {total_time:.2f}s")
+                    st.sidebar.write(f"📏 Answer: {len(answer)} chars")
+                
             except Exception as e:
-                answer = f"Error during Q&A: {e}"
+                error_msg = f"Error during Q&A: {e}"
+                if DEBUG:
+                    st.sidebar.error(f"💥 {error_msg}")
+                    st.sidebar.text(f"Traceback:\n{traceback.format_exc()}")
+                answer = error_msg
 
             st.write(answer)
 
