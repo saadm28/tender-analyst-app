@@ -1,0 +1,11 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+enableStaticServing = false
+runOnSave = false
+port = 8501
+folderWatchBlacklist = ["__pycache__", "venv", "env", ".venv", "tender-project", "bin", "lib", "etc", "include", "share"]
+
+[theme]
+base = "light"
