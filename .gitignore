@@ -3,7 +3,7 @@
 tender-project/
 venv/
 env/
-# .streamlit/ 
+.streamlit/ 
 
 # Python
 __pycache__/
