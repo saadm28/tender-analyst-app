@@ -1,4 +1,17 @@
 # app/streamlit_app.py
+
+# streamlit_app.py (top)
+import warnings
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except Exception:
+    # Fallback in case import path changes
+    warnings.filterwarnings("ignore", message=".*ARC4 has been moved.*")
+
+
+
+
 import os
 import json
 import hashlib
