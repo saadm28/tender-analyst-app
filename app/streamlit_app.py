@@ -149,8 +149,38 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
         chunks, companies = make_chunks_from_uploads(uploaded_docs)
         if not chunks:
             raise RuntimeError("No readable text found in the uploaded files.")
+        
+        # Enhanced debugging: examine actual chunk format
+        print(f"DEBUG: Total chunks created: {len(chunks)}")
+        print(f"DEBUG: Companies extracted: {companies}")
+        
+        # Print first few chunks to see actual format
+        print("DEBUG: First 3 chunk prefixes:")
+        for i, ch in enumerate(chunks[:3]):
+            first_line = ch.split('\n')[0] if ch else ""
+            print(f"  [{i}]: {first_line}")
+        
+        # Count chunks by company with corrected regex
+        import re
+        by_company = {}
+        for i, ch in enumerate(chunks):
+            # Match the actual format: [Tender Response from Company: filename]
+            m = re.match(r'\[Tender Response from (.+?):', ch)
+            if m:
+                company = m.group(1)
+                by_company.setdefault(company, []).append(i)
+        
+        print("DEBUG: KB chunk counts by company")
+        for c in companies:
+            print(f"- {c}: {len(by_company.get(c, []))} chunks")
+        
+        # Also print what patterns we actually found
+        print("DEBUG: Regex matches found:")
+        for company, indices in by_company.items():
+            print(f"- {company}: {len(indices)} matches")
+        
         index = build_index_cached(tuple(chunks))
-        st.session_state.chatbot_docs = {"chunks": chunks, "index": index, "companies": companies, "kb_key": current_key}
+        st.session_state.chatbot_docs = {"chunks": chunks, "index": index, "companies": companies, "kb_key": current_key, "by_company": by_company}
         return True
 
     if show_ui:
@@ -399,6 +429,15 @@ def chatbot_tab():
     kb = st.session_state.chatbot_docs
     chunks = kb["chunks"]; index = kb["index"]
     companies = kb.get("companies", [])
+    
+    # Keep console debugging but remove UI display
+    if kb.get("by_company"):
+        print("DEBUG: KB coverage by bidder (chatbot_tab)")
+        for c in companies:
+            count = len(kb['by_company'].get(c, []))
+            print(f"- {c}: {count} chunks")
+    else:
+        print("DEBUG: No by_company data available in KB")
 
     # Example prompt chips
     st.caption("Try one of these:")
@@ -440,11 +479,78 @@ def chatbot_tab():
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                if index is not None:
-                    hits = retrieve(question, chunks, index, embed_texts, k=CHAT_RETRIEVAL_K)
-                    context = hits["context"] or simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
-                else:
+                # Balanced retrieval: get chunks from RFP + each company
+                context_parts = []
+                
+                # Safety check: ensure we have valid chunks and index
+                if not chunks or not index:
                     context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
+                else:
+                    # 1. Get RFP chunks (2-3 relevant chunks)
+                    rfp_chunks = [ch for ch in chunks if ch.startswith("[RFP Document:")]
+                    if rfp_chunks and index is not None:
+                        try:
+                            rfp_hits = retrieve(question, rfp_chunks, index, embed_texts, k=min(3, len(rfp_chunks)))
+                            if rfp_hits["context"]:
+                                context_parts.append("=== RFP REQUIREMENTS ===\n" + rfp_hits["context"])
+                        except Exception as e:
+                            print(f"DEBUG: Error retrieving RFP chunks: {e}")
+                    
+                    # 2. Get commercial chunks if relevant
+                    commercial_chunks = [ch for ch in chunks if ch.startswith("[Commercial Document:")]
+                    if commercial_chunks and any(term in question.lower() for term in ['cost', 'price', 'budget', 'financial', 'commercial']):
+                        if index is not None:
+                            try:
+                                comm_hits = retrieve(question, commercial_chunks, index, embed_texts, k=min(2, len(commercial_chunks)))
+                                if comm_hits["context"]:
+                                    context_parts.append("=== COMMERCIAL DATA ===\n" + comm_hits["context"])
+                            except Exception as e:
+                                print(f"DEBUG: Error retrieving commercial chunks: {e}")
+                    
+                    # 3. Get balanced chunks per company (2 chunks each)
+                    by_company = kb.get("by_company", {})
+                    if by_company:
+                        context_parts.append("=== COMPANY RESPONSES ===")
+                        for company in companies:
+                            company_indices = by_company.get(company, [])
+                            if company_indices:
+                                try:
+                                    company_chunks = [chunks[i] for i in company_indices if i < len(chunks)]
+                                    if company_chunks:
+                                        # Use different strategies based on company chunk count
+                                        if len(company_chunks) < 50:
+                                            # Small companies: use keyword search for better coverage
+                                            company_context = simple_text_search(question, company_chunks, max_results=2)
+                                            if company_context:
+                                                context_parts.append(f"--- {company} ---\n" + company_context)
+                                            else:
+                                                # Fallback: include first chunk to ensure representation
+                                                context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                        else:
+                                            # Large companies: use semantic search
+                                            if index is not None:
+                                                company_hits = retrieve(question, company_chunks, index, embed_texts, k=min(2, len(company_chunks)))
+                                                if company_hits["context"]:
+                                                    context_parts.append(f"--- {company} ---\n" + company_hits["context"])
+                                                else:
+                                                    # Fallback: include first chunk
+                                                    context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                except Exception as e:
+                                    print(f"DEBUG: Error retrieving chunks for {company}: {e}")
+                                    # Emergency fallback: include at least something for each company
+                                    if company_indices:
+                                        try:
+                                            fallback_chunk = chunks[company_indices[0]]
+                                            context_parts.append(f"--- {company} ---\n" + fallback_chunk)
+                                        except:
+                                            pass
+                    
+                    # Combine all context parts
+                    context = "\n\n".join(context_parts) if context_parts else ""
+                    
+                    # Fallback to simple search if no context
+                    if not context:
+                        context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
 
                 # Create company context for the prompt
                 companies_context = ""
@@ -453,9 +559,9 @@ def chatbot_tab():
 
                 prompt = f"""You are a helpful tender analyst for construction projects in the UAE.
 
-{companies_context}Answer the question using the source snippets below. Always provide the most relevant information available, even if it doesn't directly answer the question. Use clear, professional language and organize your response logically.
+{companies_context}Answer the question using the source snippets below. The snippets are organized by RFP requirements, commercial data (if relevant), and individual company responses. Always provide the most relevant information available for each company, even if it doesn't directly answer the question. Use clear, professional language and organize your response logically.
 
-When discussing companies, use the company names from the list above. If the exact answer isn't available, provide the closest related information and explain how it relates to the question.
+When discussing companies, use the company names from the list above. If specific information isn't available for a company, provide the closest related information and explain how it relates to the question.
 
 Source snippets:
 {context}
@@ -465,18 +571,26 @@ Question: {question}
                 
                 # DEBUG: Print the chatbot prompt being sent to GPT
                 print("=" * 80)
-                print("DEBUG: CHATBOT PROMPT")
+                print("DEBUG: BALANCED RETRIEVAL CHATBOT PROMPT")
                 print("=" * 80)
                 print(f"Question: {question}")
                 print(f"Companies context: {companies_context.strip()}")
                 print(f"Context length: {len(context)} chars")
+                print(f"Context parts: {len(context_parts)}")
                 print(f"Total prompt length: {len(prompt)} chars")
                 print(f"Number of companies: {len(companies)}")
-                print("\nPROMPT PREVIEW (first 800 chars):")
+                print("\nCONTEXT STRUCTURE:")
                 print("-" * 40)
-                print(prompt[:800] + "..." if len(prompt) > 800 else prompt)
+                for i, part in enumerate(context_parts):
+                    first_line = part.split('\n')[0]
+                    part_length = len(part)
+                    print(f"[{i}] {first_line} ({part_length} chars)")
+                print("\nACTUAL CONTEXT CONTENT (first 200 chars of each part):")
                 print("-" * 40)
-                print("END OF PROMPT PREVIEW")
+                for i, part in enumerate(context_parts):
+                    preview = part[:200].replace('\n', ' ')
+                    print(f"[{i}] {preview}...")
+                print("-" * 40)
                 print("=" * 80)
                 
                 answer = respond(prompt, GENERATION_MODEL, 0.1) or "Something went wrong while generating the answer."
