@@ -13,6 +13,10 @@ except Exception:
 import os
 import json
 import hashlib
+import contextlib
+import traceback
+import time
+import sys
 from typing import Tuple, List
 
 import streamlit as st
@@ -26,29 +30,51 @@ from core.reporting import build_markdown, build_pdf_report
 # from core.reporting import build_markdown, markdown_to_pdf
 
 
-# Add Debug Sidebar
-import traceback, time, uuid, json, tempfile, os
-
+# Add Debug configuration - prints to terminal and optionally to UI
 # Safe debugging toggle that works locally and on Streamlit Cloud
 try:
     # Try to get from secrets first (Streamlit Cloud)
-    import streamlit as st
     DEBUG = bool(st.secrets.get("DEBUG", False))
 except Exception:
     # Fallback for local (no secrets)
     DEBUG = False
 
-# Add sidebar toggle
-DEBUG = DEBUG or st.sidebar.toggle("Debug mode", value=False, help="Show internals, tracebacks, and raw LLM outputs")
-if DEBUG:
-    st.sidebar.info("🐛 Debug mode is ON")
-    st.sidebar.write("**Debug Info:**")
-    st.sidebar.write(f"- Python version: {os.sys.version}")
-    st.sidebar.write(f"- Streamlit version: {st.__version__}")
-    st.sidebar.write(f"- Session state keys: {list(st.session_state.keys())}")
-    st.sidebar.divider()
-else:
-    st.sidebar.info("Debug mode is OFF")
+# Add UI debug toggle
+DEBUG = DEBUG or st.checkbox("🐛 Show debug info on screen", value=False)
+
+def debug_print(message, show_in_ui=None):
+    """Print debug message to terminal and optionally to Streamlit UI"""
+    # Always print to terminal/console
+    print(f"DEBUG: {message}")
+    
+    # Show in UI if debug mode is on
+    if show_in_ui is None:
+        show_in_ui = DEBUG
+    
+    if show_in_ui:
+        st.text(f"🐛 {message}")
+
+def debug_info(title, data, show_in_ui=None):
+    """Print debug info section"""
+    debug_print(f"=== {title} ===", show_in_ui)
+    if isinstance(data, dict):
+        for key, value in data.items():
+            debug_print(f"  {key}: {value}", show_in_ui)
+    else:
+        debug_print(f"  {data}", show_in_ui)
+    debug_print("", show_in_ui)
+
+def debug_error(message, error, show_in_ui=None):
+    """Print debug error with traceback"""
+    debug_print(f"ERROR: {message}", show_in_ui)
+    debug_print(f"Error details: {error}", show_in_ui)
+    debug_print(f"Error type: {type(error).__name__}", show_in_ui)
+    if show_in_ui is None:
+        show_in_ui = DEBUG
+    if show_in_ui:
+        st.error(f"❌ {message}: {error}")
+        with st.expander("Full traceback"):
+            st.text(traceback.format_exc())
 
 
 
@@ -65,13 +91,27 @@ BRAND_LOGO_PATH = "app/assets/bauhaus_logo.png"   # <-- save your new combined l
 
 # ----------------------- Session bootstrap ------------------------
 def init_session_state():
-    ss = st.session_state
-    ss.setdefault("active_tab", "Home")
-    ss.setdefault("uploaded_documents", {"rfp": None, "tenders": [], "commercial": None})
-    ss.setdefault("chatbot_docs", {"chunks": [], "index": None, "companies": [], "kb_key": None})
-    ss.setdefault("chat_history", [])
-    ss.setdefault("queued_question", None)
-    ss.setdefault("report", {"md": None, "pdf": None, "results": None})
+    try:
+        debug_print("Initializing session state...")
+        ss = st.session_state
+        ss.setdefault("active_tab", "Home")
+        ss.setdefault("uploaded_documents", {"rfp": None, "tenders": [], "commercial": None})
+        ss.setdefault("chatbot_docs", {"chunks": [], "index": None, "companies": [], "kb_key": None})
+        ss.setdefault("chat_history", [])
+        ss.setdefault("queued_question", None)
+        ss.setdefault("report", {"md": None, "pdf": None, "results": None})
+        debug_print("Session state initialized successfully")
+    except Exception as e:
+        # Fallback initialization if session state fails
+        error_msg = f"Session state initialization error: {e}"
+        print(f"CRITICAL: {error_msg}")
+        print(f"Traceback:\n{traceback.format_exc()}")
+        st.error(error_msg)
+        # Try to at least set the active tab
+        try:
+            st.session_state.active_tab = "Home"
+        except:
+            pass
 
 
 # ----------------------------- Helpers ----------------------------
@@ -165,7 +205,7 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
 
     def _do():
         if DEBUG:
-            st.sidebar.write("🔄 Building chunks...")
+            debug_print("Starting chunk creation...")
             start_time = time.time()
             
         chunks, companies = make_chunks_from_uploads(uploaded_docs)
@@ -174,8 +214,11 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
         
         if DEBUG:
             chunk_time = time.time() - start_time
-            st.sidebar.write(f"📄 Chunks created in {chunk_time:.2f}s: {len(chunks)} total")
-            st.sidebar.write(f"🏢 Companies: {companies}")
+            debug_info("Chunk Creation Results", {
+                "Time taken": f"{chunk_time:.2f}s",
+                "Total chunks": len(chunks),
+                "Companies found": companies
+            })
         
         # Enhanced debugging: examine actual chunk format
         print(f"DEBUG: Total chunks created: {len(chunks)}")
@@ -207,19 +250,22 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
             print(f"- {company}: {len(indices)} matches")
         
         if DEBUG:
-            st.sidebar.write("📊 Chunk distribution:")
-            for c in companies:
-                count = len(by_company.get(c, []))
-                st.sidebar.write(f"  • {c}: {count} chunks")
+            debug_info("Chunk Distribution", {
+                company: len(by_company.get(company, []))
+                for company in companies
+            })
             
             embed_start = time.time()
+            debug_print("Building embeddings...")
         
         index = build_index_cached(tuple(chunks))
         
         if DEBUG:
             embed_time = time.time() - embed_start
-            st.sidebar.write(f"🔗 Embeddings built in {embed_time:.2f}s")
-            st.sidebar.write(f"📊 Index vectors: {index.ntotal if hasattr(index, 'ntotal') else 'N/A'}")
+            debug_info("Embedding Results", {
+                "Time taken": f"{embed_time:.2f}s",
+                "Index vectors": getattr(index, 'ntotal', 'N/A')
+            })
         
         st.session_state.chatbot_docs = {"chunks": chunks, "index": index, "companies": companies, "kb_key": current_key, "by_company": by_company}
         return True
@@ -357,20 +403,17 @@ def generate_report_tab():
                     if ud["commercial"]:
                         commercial_filename = ud["commercial"]["name"].lower()
                         try:
-                            if DEBUG:
-                                st.sidebar.write(f"💰 Processing commercial: {ud['commercial']['name']}")
+                            debug_print(f"Processing commercial file: {ud['commercial']['name']}")
                             
                             if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
                                 # Use structured JSON parsing for spreadsheet files
                                 commercial_data = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
-                                if DEBUG:
-                                    st.sidebar.write(f"✅ Commercial loaded as JSON")
+                                debug_print("Commercial data loaded as JSON structure")
                                 print(f"DEBUG: Loaded commercial data as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
                             else:
                                 # Fallback to text parsing for other file types
                                 commercial_data = load_document(ud["commercial"]["content"], ud["commercial"]["name"])
-                                if DEBUG:
-                                    st.sidebar.write(f"✅ Commercial loaded as text: {len(str(commercial_data))} chars")
+                                debug_print(f"Commercial data loaded as text: {len(str(commercial_data))} chars")
                                 print(f"DEBUG: Loaded commercial data as text from {ud['commercial']['name']} - type: {type(commercial_data)}, length: {len(str(commercial_data))}")
                                 # Ensure it's a string
                                 if not isinstance(commercial_data, str):
@@ -378,15 +421,12 @@ def generate_report_tab():
                                     commercial_data = str(commercial_data)
                         except Exception as e:
                             error_msg = f"Error loading commercial document {ud['commercial']['name']}: {str(e)}"
-                            if DEBUG:
-                                st.sidebar.error(f"❌ {error_msg}")
-                                st.sidebar.text(f"Traceback: {traceback.format_exc()}")
+                            debug_error("Commercial data processing failed", e)
                             st.error(error_msg)
                             commercial_data = ""
                     else:
                         commercial_data = ""  # Ensure it's a string when no commercial data
-                        if DEBUG:
-                            st.sidebar.write("ℹ️ No commercial document provided")
+                        debug_print("No commercial document provided")
                         print("DEBUG: No commercial document provided")
 
                     # get_response = lambda p: respond(p, GENERATION_MODEL, 0.1)
@@ -442,13 +482,7 @@ def generate_report_tab():
 
                 except Exception as e:
                     error_msg = f"Error during analysis: {e}"
-                    if DEBUG:
-                        st.sidebar.error(f"💥 {error_msg}")
-                        st.sidebar.text(f"Traceback:\n{traceback.format_exc()}")
-                        # Also show recent session state for debugging
-                        st.sidebar.write("🔍 Session state at error:")
-                        st.sidebar.write(f"  • Report keys: {list(st.session_state.report.keys())}")
-                        st.sidebar.write(f"  • Upload keys: {list(st.session_state.uploaded_documents.keys())}")
+                    debug_error("Analysis failed", e)
                     st.error(error_msg)
     else:
         st.info("Upload one RFP and at least one tender to run the analysis.")
@@ -541,17 +575,15 @@ def chatbot_tab():
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                if DEBUG:
-                    st.sidebar.write("🤔 Processing question...")
-                    question_start = time.time()
+                debug_print(f"Processing question: {question}")
+                question_start = time.time()
                 
                 # Balanced retrieval: get chunks from RFP + each company
                 context_parts = []
                 
                 # Safety check: ensure we have valid chunks and index
                 if not chunks or not index:
-                    if DEBUG:
-                        st.sidebar.warning("⚠️ No chunks or index, using fallback search")
+                    debug_print("Warning: No chunks or index available, using fallback search")
                     context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
                 else:
                     # 1. Get RFP chunks (2-3 relevant chunks)
@@ -718,29 +750,68 @@ Question: {question}
 
 # ------------------------------- Main -------------------------------
 def main():
-    init_session_state()
-    tab = st.session_state.active_tab
+    try:
+        debug_print("=== APPLICATION STARTUP ===")
+        debug_print(f"Python version: {sys.version}")
+        debug_print(f"Streamlit version: {st.__version__}")
+        debug_print(f"Current directory: {os.getcwd()}")
+        
+        init_session_state()
+        debug_print("Session state initialized successfully")
+        
+        tab = st.session_state.active_tab
+        debug_print(f"Active tab: {tab}")
 
-    if tab == "Home":
-        home_tab()
-    elif tab == "Generate Report":
-        generate_report_tab()
-    else:
-        # Chatbot
-        chatbot_tab()
+        if tab == "Home":
+            debug_print("Loading Home tab")
+            home_tab()
+        elif tab == "Generate Report":
+            debug_print("Loading Generate Report tab")
+            generate_report_tab()
+        else:
+            # Chatbot
+            debug_print("Loading Chatbot tab")
+            chatbot_tab()
 
-    # Sidebar fallback navigation (handy if someone prefers it)
-    with st.sidebar:
-        choice = st.radio("Navigate", ["Home", "Generate Report", "Chatbot"],
-                          index=["Home", "Generate Report", "Chatbot"].index(st.session_state.active_tab))
-        if choice != st.session_state.active_tab:
-            st.session_state.active_tab = choice
-            st.rerun()
+        # Sidebar fallback navigation (handy if someone prefers it)
+        with st.sidebar:
+            choice = st.radio("Navigate", ["Home", "Generate Report", "Chatbot"],
+                              index=["Home", "Generate Report", "Chatbot"].index(st.session_state.active_tab))
+            if choice != st.session_state.active_tab:
+                debug_print(f"Tab changed from {st.session_state.active_tab} to {choice}")
+                st.session_state.active_tab = choice
+                st.rerun()
 
-    # Sidebar API key nudge
-    if not os.getenv("OPENAI_API_KEY"):
-        st.sidebar.error("OPENAI_API_KEY not found")
-        st.sidebar.info("Set it in your environment before running analysis or chat.")
+        # Sidebar API key nudge
+        if not os.getenv("OPENAI_API_KEY"):
+            st.sidebar.error("OPENAI_API_KEY not found")
+            st.sidebar.info("Set it in your environment before running analysis or chat.")
+            debug_print("WARNING: OPENAI_API_KEY not found in environment")
+        else:
+            debug_print("OPENAI_API_KEY found in environment")
+            
+    except Exception as e:
+        error_msg = f"Application Error: {e}"
+        print(f"CRITICAL ERROR: {error_msg}")
+        print(f"Full traceback:\n{traceback.format_exc()}")
+        
+        st.error(error_msg)
+        st.error("Please refresh the page or contact support if the error persists.")
+        
+        # Show detailed error info
+        st.subheader("� Error Details")
+        st.text(f"Error: {e}")
+        st.text(f"Type: {type(e).__name__}")
+        with st.expander("Full Traceback"):
+            st.text(traceback.format_exc())
+        
+        # Try to show basic navigation as fallback
+        try:
+            st.session_state.setdefault("active_tab", "Home")
+            with st.sidebar:
+                st.radio("Navigate", ["Home", "Generate Report", "Chatbot"], key="fallback_nav")
+        except:
+            pass  # Even navigation failed
 
 
 if __name__ == "__main__":
