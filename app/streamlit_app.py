@@ -21,18 +21,46 @@ from typing import Tuple, List
 
 import streamlit as st
 
-# Fix imports for Streamlit Cloud deployment
-# Add current directory to path to find core modules
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+# Core modules - now at root level, no path manipulation needed
+try:
+    from core.llm import respond, embed_texts
+    print("✅ Successfully imported core.llm")
+except Exception as e:
+    print(f"❌ Failed to import core.llm: {e}")
+    st.error(f"Failed to import core.llm: {e}")
+    st.stop()
 
-# Core modules
-from core.llm import respond, embed_texts
-from core.parsing import load_document, load_commercial_data_as_json, chunk_text
-from core.rag import build_faiss, retrieve
-from core.analysis import compare_and_recommend  # Removed summarize_tender - using direct content now
-from core.reporting import build_markdown, build_pdf_report
+try:
+    from core.parsing import load_document, load_commercial_data_as_json, chunk_text
+    print("✅ Successfully imported core.parsing")
+except Exception as e:
+    print(f"❌ Failed to import core.parsing: {e}")
+    st.error(f"Failed to import core.parsing: {e}")
+    st.stop()
+
+try:
+    from core.rag import build_faiss, retrieve
+    print("✅ Successfully imported core.rag")
+except Exception as e:
+    print(f"❌ Failed to import core.rag: {e}")
+    st.error(f"Failed to import core.rag: {e}")
+    st.stop()
+
+try:
+    from core.analysis import compare_and_recommend
+    print("✅ Successfully imported core.analysis")
+except Exception as e:
+    print(f"❌ Failed to import core.analysis: {e}")
+    st.error(f"Failed to import core.analysis: {e}")
+    st.stop()
+
+try:
+    from core.reporting import build_markdown, build_pdf_report
+    print("✅ Successfully imported core.reporting")
+except Exception as e:
+    print(f"❌ Failed to import core.reporting: {e}")
+    st.error(f"Failed to import core.reporting: {e}")
+    st.stop()
 # from core.reporting import build_markdown, markdown_to_pdf
 
 
@@ -47,6 +75,35 @@ except Exception:
 
 # Add UI debug toggle
 DEBUG = DEBUG or st.checkbox("🐛 Show debug info on screen", value=False)
+
+# Streamlit Cloud startup diagnostics
+st.write("🔧 **Startup Diagnostics**")
+st.write(f"- Python version: {sys.version}")
+st.write(f"- Streamlit version: {st.__version__}")
+st.write(f"- Current working directory: {os.getcwd()}")
+st.write(f"- App file location: {os.path.abspath(__file__)}")
+st.write(f"- Core directory exists at root: {os.path.exists('core')}")
+st.write(f"- Core directory exists in app: {os.path.exists('app/core')}")
+
+# Check core module files
+core_files = ['llm.py', 'parsing.py', 'rag.py', 'analysis.py', 'reporting.py']
+st.write("**Core module files (root level):**")
+for file in core_files:
+    file_path = os.path.join('core', file)
+    exists = os.path.exists(file_path)
+    st.write(f"  - {file}: {'✅' if exists else '❌'}")
+
+# Environment variables check
+st.write("**Environment Variables:**")
+env_vars = ["OPENAI_API_KEY", "OPENAI_RESPONSES_MODEL", "OPENAI_EMBEDDINGS_MODEL"]
+for var in env_vars:
+    value = os.getenv(var)
+    if value:
+        st.write(f"  - {var}: ✅ Set ({value[:10]}...)")
+    else:
+        st.write(f"  - {var}: ❌ Not set")
+
+st.divider()
 
 def debug_print(message, show_in_ui=None):
     """Print debug message to terminal and optionally to Streamlit UI"""
