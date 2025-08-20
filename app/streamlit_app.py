@@ -1,79 +1,79 @@
 # app/streamlit_app.py
 
-# streamlit_app.py (top)
-import warnings
-try:
-    from cryptography.utils import CryptographyDeprecationWarning
-    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
-except Exception:
-    # Fallback in case import path changes
-    warnings.filterwarnings("ignore", message=".*ARC4 has been moved.*")
-
-
-import os
-import json
-import hashlib
-import contextlib
-import traceback
-import time
-import sys
-from typing import Tuple, List
-
+# COMPREHENSIVE ERROR HANDLER - CATCHES EVERYTHING
 import streamlit as st
-
-# Robust import handling for Streamlit Cloud
+import traceback
 import sys
 import os
 
+def show_error(error_msg, traceback_str):
+    """Display error in both Streamlit UI and console"""
+    print(f"❌ ERROR: {error_msg}")
+    print(f"❌ TRACEBACK:\n{traceback_str}")
+    
+    st.error(f"🚨 Application Error: {error_msg}")
+    st.subheader("🔍 Error Details")
+    st.text(f"Error: {error_msg}")
+    st.text(f"Error Type: {type(error_msg).__name__}")
+    
+    with st.expander("Full Error Traceback (Click to expand)", expanded=True):
+        st.code(traceback_str, language="python")
+    
+    st.info("Please check the error details above and contact support if needed.")
 
-# GLOBAL ERROR HANDLER FOR STREAMLIT CLOUD DEBUGGING
-import streamlit as st
-import traceback
 try:
-    import os
-    import sys
+    # Step 1: Basic imports
+    print("DEBUG: Starting imports...")
     from pathlib import Path
-
-    # Debug function for early troubleshooting
-    def debug_print(msg):
-        print(f"DEBUG: {msg}")
-
-    # Simple and reliable import system
+    
+    # Step 2: Setup paths
+    print("DEBUG: Setting up paths...")
     repo_root = os.path.dirname(os.path.dirname(__file__))  # Go up from app/ to repository root
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-
-    debug_print(f"Added repository root to Python path: {repo_root}")
-    debug_print(f"Core directory exists: {os.path.exists(os.path.join(repo_root, 'core'))}")
-
-    # Import core modules
+    
+    print(f"DEBUG: Repository root: {repo_root}")
+    print(f"DEBUG: Core directory exists: {os.path.exists(os.path.join(repo_root, 'core'))}")
+    print(f"DEBUG: Current working directory: {os.getcwd()}")
+    print(f"DEBUG: Python path: {sys.path[:3]}")
+    
+    # Step 3: Core module imports
+    print("DEBUG: Importing core modules...")
     from core import llm, parsing, rag, analysis, reporting
-    # Import specific functions we need
     from core.llm import respond, embed_texts
     from core.parsing import load_document, load_commercial_data_as_json, chunk_text
     from core.rag import build_faiss, retrieve
     from core.analysis import compare_and_recommend
     from core.reporting import build_markdown, build_pdf_report
-    debug_print("✅ Successfully imported all core modules!")
+    print("DEBUG: ✅ All core modules imported successfully!")
+    
+    # Step 4: Other imports
+    print("DEBUG: Importing other modules...")
+    import warnings
+    try:
+        from cryptography.utils import CryptographyDeprecationWarning
+        warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+    except Exception:
+        warnings.filterwarnings("ignore", message=".*ARC4 has been moved.*")
+    
+    import json
+    import hashlib
+    import contextlib
+    import time
+    from typing import Tuple, List
+    import zipfile
+    import base64
+    from io import BytesIO
+    from datetime import datetime
+    import pandas as pd
+    print("DEBUG: ✅ All imports completed successfully!")
 
 except Exception as e:
-    st.error(f"Startup Error: {e}")
-    st.text(traceback.format_exc())
-    print(traceback.format_exc())
-    st.stop()
+    error_traceback = traceback.format_exc()
+    show_error(str(e), error_traceback)
+    st.stop()  # Stop execution here if imports fail
 
-# Additional Streamlit and other imports
-import streamlit as st
-import hashlib
-from typing import List, Tuple
-import zipfile
-import base64
-from io import BytesIO
-from datetime import datetime
-import pandas as pd
-import time
-import json
-# from core.reporting import build_markdown, markdown_to_pdf
+# Continue with the rest of the application...
 
 
 # Add Debug configuration - prints to terminal and optionally to UI
@@ -890,4 +890,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        error_traceback = traceback.format_exc()
+        print(f"❌ CRITICAL ERROR IN MAIN: {e}")
+        print(f"❌ TRACEBACK:\n{error_traceback}")
+        
+        st.error(f"🚨 Critical Application Error: {str(e)}")
+        st.subheader("🔍 Error Details")
+        st.text(f"Error: {str(e)}")
+        st.text(f"Error Type: {type(e).__name__}")
+        
+        with st.expander("Full Error Traceback (Click to expand)", expanded=True):
+            st.code(error_traceback, language="python")
+        
+        st.info("Please check the error details above and contact support if needed.")
+        st.stop()
