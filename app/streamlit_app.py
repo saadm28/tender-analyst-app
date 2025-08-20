@@ -454,14 +454,22 @@ def generate_report_tab():
         if st.button("Generate comprehensive report", type="primary", use_container_width=True):
             with st.spinner("Analyzing documents…"):
                 try:
-                    rfp_txt = load_document(ud["rfp"]["content"], ud["rfp"]["name"])
-                    print(f"DEBUG: RFP loaded - type: {type(rfp_txt)}, length: {len(str(rfp_txt))}")
-                    
+                    print("DEBUG: Loading RFP document...")
+                    try:
+                        rfp_txt = load_document(ud["rfp"]["content"], ud["rfp"]["name"])
+                        print(f"DEBUG: ✅ RFP loaded - type: {type(rfp_txt)}, length: {len(str(rfp_txt))}")
+                    except Exception as e:
+                        print(f"DEBUG: ❌ RFP loading failed: {e}")
+                        st.error(f"Failed to load RFP document: {str(e)}")
+                        return
+
+                    print("DEBUG: Loading tender documents...")
                     tenders_parsed = []
                     for i, t in enumerate(ud["tenders"]):
                         try:
+                            print(f"DEBUG: Loading tender {i+1}: {t['name']}")
                             tender_content = load_document(t["content"], t["name"])
-                            print(f"DEBUG: Tender {i+1} ({t['name']}) loaded - type: {type(tender_content)}, length: {len(str(tender_content))}")
+                            print(f"DEBUG: ✅ Tender {i+1} ({t['name']}) loaded - type: {type(tender_content)}, length: {len(str(tender_content))}")
                             
                             # Ensure tender content is a string
                             if not isinstance(tender_content, str):
@@ -470,35 +478,34 @@ def generate_report_tab():
                             
                             tenders_parsed.append({"name": t["name"], "content": tender_content})
                         except Exception as e:
+                            print(f"DEBUG: ❌ Tender {i+1} loading failed: {e}")
                             st.error(f"Error loading tender {t['name']}: {str(e)}")
                             return
                     
+                    print("DEBUG: Loading commercial data...")
                     # Process commercial data properly - check if it's CSV/Excel for structured parsing
                     commercial_data = None
                     if ud["commercial"]:
                         commercial_filename = ud["commercial"]["name"].lower()
                         try:
-                            debug_print(f"Processing commercial file: {ud['commercial']['name']}")
+                            print(f"DEBUG: Processing commercial file: {ud['commercial']['name']}")
                             
                             if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
                                 # Use structured JSON parsing for spreadsheet files
                                 commercial_data = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
-                                debug_print("Commercial data loaded as JSON structure")
-                                print(f"DEBUG: Loaded commercial data as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
+                                print(f"DEBUG: ✅ Commercial data loaded as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
                             else:
-                                # Fallback to text parsing for other file types
+                                # Parse as regular document for other file types
                                 commercial_data = load_document(ud["commercial"]["content"], ud["commercial"]["name"])
-                                debug_print(f"Commercial data loaded as text: {len(str(commercial_data))} chars")
-                                print(f"DEBUG: Loaded commercial data as text from {ud['commercial']['name']} - type: {type(commercial_data)}, length: {len(str(commercial_data))}")
+                                print(f"DEBUG: ✅ Commercial data loaded as text from {ud['commercial']['name']} - type: {type(commercial_data)}")
                                 # Ensure it's a string
                                 if not isinstance(commercial_data, str):
                                     print(f"WARNING: Commercial data returned {type(commercial_data)}, converting to string")
                                     commercial_data = str(commercial_data)
                         except Exception as e:
-                            error_msg = f"Error loading commercial document {ud['commercial']['name']}: {str(e)}"
-                            debug_error("Commercial data processing failed", e)
-                            st.error(error_msg)
-                            commercial_data = ""
+                            print(f"DEBUG: ❌ Commercial data loading failed: {e}")
+                            st.error(f"Error loading commercial data: {str(e)}")
+                            return
                     else:
                         commercial_data = ""  # Ensure it's a string when no commercial data
                         debug_print("No commercial document provided")
@@ -544,10 +551,37 @@ def generate_report_tab():
                             st.error(f"Error: Tender {td.get('name', f'#{i+1}')} content is not properly formatted")
                             return
 
-                    results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
+                    print("DEBUG: Starting compare_and_recommend analysis...")
+                    
+                    try:
+                        results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
+                        print("DEBUG: ✅ compare_and_recommend completed successfully")
+                    except Exception as e:
+                        print(f"DEBUG: ❌ compare_and_recommend failed: {e}")
+                        print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
+                        st.error(f"Analysis failed: {str(e)}")
+                        with st.expander("Analysis Error Details"):
+                            st.code(traceback.format_exc())
+                        return
 
-                    report_md = build_markdown(results)
-                    pdf_bytes = build_pdf_report(results)
+                    print("DEBUG: Starting markdown report generation...")
+                    try:
+                        report_md = build_markdown(results)
+                        print("DEBUG: ✅ Markdown report generated successfully")
+                    except Exception as e:
+                        print(f"DEBUG: ❌ Markdown generation failed: {e}")
+                        st.error(f"Report generation failed: {str(e)}")
+                        return
+
+                    print("DEBUG: Starting PDF report generation...")
+                    try:
+                        pdf_bytes = build_pdf_report(results)
+                        print("DEBUG: ✅ PDF report generated successfully")
+                    except Exception as e:
+                        print(f"DEBUG: ❌ PDF generation failed: {e}")
+                        st.error(f"PDF generation failed: {str(e)}")
+                        # Continue without PDF if markdown worked
+                        pdf_bytes = None
 
                     # Persist so downloads/reruns never wipe the content
                     st.session_state.report = {"md": report_md, "pdf": pdf_bytes, "results": results}
