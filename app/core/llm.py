@@ -2,21 +2,19 @@
 import os
 from dotenv import load_dotenv, find_dotenv
 
-# Load .env for local dev
+# Always load .env for local development
 load_dotenv(find_dotenv(), override=False)
 
-# --- Streamlit secrets shim (Cloud-safe) ---
+# --- Streamlit secrets fallback ---
+# If running in Streamlit Cloud and secrets exist, use them; else use .env
 try:
-    import streamlit as st  # available when running inside Streamlit
-    if "OPENAI_API_KEY" in st.secrets and not os.getenv("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-    # optional: allow model overrides via secrets too
-    if "OPENAI_RESPONSES_MODEL" in st.secrets and not os.getenv("OPENAI_RESPONSES_MODEL"):
-        os.environ["OPENAI_RESPONSES_MODEL"] = st.secrets["OPENAI_RESPONSES_MODEL"]
-    if "OPENAI_EMBEDDINGS_MODEL" in st.secrets and not os.getenv("OPENAI_EMBEDDINGS_MODEL"):
-        os.environ["OPENAI_EMBEDDINGS_MODEL"] = st.secrets["OPENAI_EMBEDDINGS_MODEL"]
+    import streamlit as st
+    # Only set env vars from secrets if not already set
+    for key in ["OPENAI_API_KEY", "OPENAI_RESPONSES_MODEL", "OPENAI_EMBEDDINGS_MODEL"]:
+        if key in st.secrets and not os.getenv(key):
+            os.environ[key] = st.secrets[key]
 except Exception:
-    # running outside Streamlit; ignore
+    # Not running in Streamlit or no secrets available
     pass
 
 import numpy as np

@@ -10,8 +10,6 @@ except Exception:
     warnings.filterwarnings("ignore", message=".*ARC4 has been moved.*")
 
 
-
-
 import os
 import json
 import hashlib
@@ -26,6 +24,13 @@ from core.rag import build_faiss, retrieve
 from core.analysis import compare_and_recommend  # Removed summarize_tender - using direct content now
 from core.reporting import build_markdown, build_pdf_report
 # from core.reporting import build_markdown, markdown_to_pdf
+
+
+# Add Debug Sidebar
+# import traceback, time, uuid, json, tempfile, os
+# DEBUG = bool(st.secrets.get("DEBUG", False)) or st.sidebar.toggle("Debug mode", value=False, help="Show internals, tracebacks, and raw LLM outputs")
+# if DEBUG:
+#     st.sidebar.info("Debug mode is ON")
 
 
 
