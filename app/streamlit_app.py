@@ -21,46 +21,83 @@ from typing import Tuple, List
 
 import streamlit as st
 
-# Core modules - now at root level, no path manipulation needed
-try:
-    from core.llm import respond, embed_texts
-    print("✅ Successfully imported core.llm")
-except Exception as e:
-    print(f"❌ Failed to import core.llm: {e}")
-    st.error(f"Failed to import core.llm: {e}")
-    st.stop()
+# Robust import handling for Streamlit Cloud
+import sys
+import os
 
-try:
-    from core.parsing import load_document, load_commercial_data_as_json, chunk_text
-    print("✅ Successfully imported core.parsing")
-except Exception as e:
-    print(f"❌ Failed to import core.parsing: {e}")
-    st.error(f"Failed to import core.parsing: {e}")
-    st.stop()
+# Add multiple potential paths to find core modules
+possible_paths = [
+    os.path.dirname(os.path.abspath(__file__)),  # app directory
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # parent directory (root)
+    os.getcwd(),  # current working directory
+    os.path.join(os.getcwd(), 'app'),  # app subdirectory from root
+]
 
-try:
-    from core.rag import build_faiss, retrieve
-    print("✅ Successfully imported core.rag")
-except Exception as e:
-    print(f"❌ Failed to import core.rag: {e}")
-    st.error(f"Failed to import core.rag: {e}")
-    st.stop()
+# Add all possible paths to Python path
+for path in possible_paths:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-try:
-    from core.analysis import compare_and_recommend
-    print("✅ Successfully imported core.analysis")
-except Exception as e:
-    print(f"❌ Failed to import core.analysis: {e}")
-    st.error(f"Failed to import core.analysis: {e}")
-    st.stop()
+# Debug: Show what paths we're checking
+print("🔍 DEBUG: Python paths added:")
+for i, path in enumerate(possible_paths):
+    print(f"  [{i}] {path}")
+    print(f"      core exists: {os.path.exists(os.path.join(path, 'core'))}")
 
-try:
-    from core.reporting import build_markdown, build_pdf_report
-    print("✅ Successfully imported core.reporting")
-except Exception as e:
-    print(f"❌ Failed to import core.reporting: {e}")
-    st.error(f"Failed to import core.reporting: {e}")
+# Try to import from each possible location
+core_imported = False
+import_errors = []
+
+for i, path in enumerate(possible_paths):
+    if os.path.exists(os.path.join(path, 'core')):
+        try:
+            # Temporarily add this specific path
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            
+            from core.llm import respond, embed_texts
+            from core.parsing import load_document, load_commercial_data_as_json, chunk_text
+            from core.rag import build_faiss, retrieve
+            from core.analysis import compare_and_recommend
+            from core.reporting import build_markdown, build_pdf_report
+            
+            print(f"✅ Successfully imported core modules from path [{i}]: {path}")
+            core_imported = True
+            break
+        except Exception as e:
+            error_msg = f"Path [{i}] {path}: {e}"
+            print(f"❌ {error_msg}")
+            import_errors.append(error_msg)
+            continue
+
+if not core_imported:
+    st.error("🚨 Failed to import core modules from any path!")
+    st.write("**Debugging Information:**")
+    st.write(f"- Current working directory: {os.getcwd()}")
+    st.write(f"- App file location: {os.path.abspath(__file__)}")
+    st.write(f"- Python path: {sys.path[:3]}...")  # First 3 paths
+    
+    st.write("**Paths checked:**")
+    for i, path in enumerate(possible_paths):
+        core_exists = os.path.exists(os.path.join(path, 'core'))
+        st.write(f"  [{i}] `{path}` - Core exists: {'✅' if core_exists else '❌'}")
+    
+    st.write("**Import errors:**")
+    for error in import_errors:
+        st.write(f"  - {error}")
+    
+    # List what's actually in the directories
+    st.write("**Directory contents:**")
+    for i, path in enumerate(possible_paths):
+        try:
+            contents = os.listdir(path)
+            st.write(f"  [{i}] `{path}`: {', '.join(contents[:5])}{'...' if len(contents) > 5 else ''}")
+        except Exception as e:
+            st.write(f"  [{i}] `{path}`: Error listing - {e}")
+    
     st.stop()
+else:
+    print("✅ All core modules imported successfully!")
 # from core.reporting import build_markdown, markdown_to_pdf
 
 
