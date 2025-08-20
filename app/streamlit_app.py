@@ -468,7 +468,18 @@ def generate_report_tab():
                     for i, t in enumerate(ud["tenders"]):
                         try:
                             print(f"DEBUG: Loading tender {i+1}: {t['name']}")
-                            tender_content = load_document(t["content"], t["name"])
+                            print(f"DEBUG: File size: {len(t['content'])} bytes")
+                            
+                            # Add timeout and size protection
+                            if len(t["content"]) > 50 * 1024 * 1024:  # 50MB limit
+                                print(f"WARNING: Tender {t['name']} is very large ({len(t['content'])/1024/1024:.1f}MB), skipping")
+                                st.warning(f"Skipping large file: {t['name']} ({len(t['content'])/1024/1024:.1f}MB)")
+                                continue
+                            
+                            # Add progress indicator
+                            with st.spinner(f"Processing tender {i+1}/{len(ud['tenders'])}: {t['name'][:50]}..."):
+                                tender_content = load_document(t["content"], t["name"])
+                                
                             print(f"DEBUG: ✅ Tender {i+1} ({t['name']}) loaded - type: {type(tender_content)}, length: {len(str(tender_content))}")
                             
                             # Ensure tender content is a string
@@ -476,11 +487,26 @@ def generate_report_tab():
                                 print(f"WARNING: Tender {t['name']} returned {type(tender_content)}, converting to string")
                                 tender_content = str(tender_content)
                             
+                            # Limit content size to prevent memory issues
+                            if len(tender_content) > 100000:  # 100K chars
+                                print(f"DEBUG: Truncating tender {t['name']} from {len(tender_content)} to 100K chars")
+                                tender_content = tender_content[:100000] + "\n[Content truncated for processing...]"
+                            
                             tenders_parsed.append({"name": t["name"], "content": tender_content})
                         except Exception as e:
                             print(f"DEBUG: ❌ Tender {i+1} loading failed: {e}")
+                            print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
                             st.error(f"Error loading tender {t['name']}: {str(e)}")
-                            return
+                            st.warning(f"Skipping problematic file: {t['name']}")
+                            # Continue with other files instead of stopping completely
+                            continue
+                    
+                    # Check if we have any successfully loaded tenders
+                    if not tenders_parsed:
+                        st.error("No tender documents could be processed successfully!")
+                        return
+                    
+                    print(f"DEBUG: Successfully loaded {len(tenders_parsed)} out of {len(ud['tenders'])} tender documents")
                     
                     print("DEBUG: Loading commercial data...")
                     # Process commercial data properly - check if it's CSV/Excel for structured parsing
@@ -489,6 +515,7 @@ def generate_report_tab():
                         commercial_filename = ud["commercial"]["name"].lower()
                         try:
                             print(f"DEBUG: Processing commercial file: {ud['commercial']['name']}")
+                            print(f"DEBUG: Commercial file size: {len(ud['commercial']['content'])} bytes")
                             
                             if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
                                 # Use structured JSON parsing for spreadsheet files
