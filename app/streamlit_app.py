@@ -25,26 +25,28 @@ import streamlit as st
 import sys
 import os
 
-import os
-import sys
+
+# GLOBAL ERROR HANDLER FOR STREAMLIT CLOUD DEBUGGING
+import streamlit as st
 import traceback
-from pathlib import Path
-
-# Debug function for early troubleshooting
-def debug_print(msg):
-    print(f"DEBUG: {msg}")
-
-# Simple and reliable import system
-# Add the repository root to Python path (where core/ directory should be)
-repo_root = os.path.dirname(os.path.dirname(__file__))  # Go up from app/ to repository root
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
-
-debug_print(f"Added repository root to Python path: {repo_root}")
-debug_print(f"Core directory exists: {os.path.exists(os.path.join(repo_root, 'core'))}")
-
-# Import core modules
 try:
+    import os
+    import sys
+    from pathlib import Path
+
+    # Debug function for early troubleshooting
+    def debug_print(msg):
+        print(f"DEBUG: {msg}")
+
+    # Simple and reliable import system
+    repo_root = os.path.dirname(os.path.dirname(__file__))  # Go up from app/ to repository root
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    debug_print(f"Added repository root to Python path: {repo_root}")
+    debug_print(f"Core directory exists: {os.path.exists(os.path.join(repo_root, 'core'))}")
+
+    # Import core modules
     from core import llm, parsing, rag, analysis, reporting
     # Import specific functions we need
     from core.llm import respond, embed_texts
@@ -53,11 +55,12 @@ try:
     from core.analysis import compare_and_recommend
     from core.reporting import build_markdown, build_pdf_report
     debug_print("✅ Successfully imported all core modules!")
-except ImportError as e:
-    debug_print(f"❌ Import error: {e}")
-    debug_print(f"Repository root contents: {os.listdir(repo_root) if os.path.exists(repo_root) else 'Directory not found'}")
-    debug_print(f"Core directory contents: {os.listdir(os.path.join(repo_root, 'core')) if os.path.exists(os.path.join(repo_root, 'core')) else 'Core directory not found'}")
-    raise
+
+except Exception as e:
+    st.error(f"Startup Error: {e}")
+    st.text(traceback.format_exc())
+    print(traceback.format_exc())
+    st.stop()
 
 # Additional Streamlit and other imports
 import streamlit as st
