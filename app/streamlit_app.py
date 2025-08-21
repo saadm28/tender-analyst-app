@@ -41,7 +41,7 @@ try:
     print("DEBUG: Importing core modules...")
     from core import llm, parsing, rag, analysis, reporting
     from core.llm import respond, embed_texts
-    from core.parsing import load_document, load_commercial_data_as_json, chunk_text
+    from core.parsing import load_document, load_commercial_data_as_json, chunk_text, filter_commercial_data_by_companies
     from core.rag import build_faiss, retrieve
     from core.analysis import compare_and_recommend
     from core.reporting import build_markdown, build_pdf_report
@@ -623,9 +623,21 @@ def generate_report_tab():
                             print(f"DEBUG: Processing commercial file: {ud['commercial']['name']}")
                             print(f"DEBUG: Commercial file size: {len(ud['commercial']['content'])} bytes")
                             
+                            # Get list of companies that actually have tender documents
+                            uploaded_company_names = [company['name'].lower().strip() for company in st.session_state.companies]
+                            print(f"DEBUG: Companies with tender docs: {uploaded_company_names}")
+                            
                             if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
                                 # Use structured JSON parsing for spreadsheet files
-                                commercial_data = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
+                                commercial_data_raw = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
+                                
+                                # Filter commercial data to only include companies that have tender submissions
+                                if isinstance(commercial_data_raw, dict):
+                                    commercial_data = filter_commercial_data_by_companies(commercial_data_raw, uploaded_company_names)
+                                    print(f"DEBUG: ✅ Commercial data filtered to only include companies with tender docs")
+                                else:
+                                    commercial_data = commercial_data_raw
+                                
                                 print(f"DEBUG: ✅ Commercial data loaded as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
                             else:
                                 # Parse as regular document for other file types
@@ -698,25 +710,23 @@ def generate_report_tab():
                     analysis_start_time = time.time()
                     
                     try:
-                        # Simple progress indicator
-                        with st.spinner("Analyzing documents..."):
-                            # Add memory and processing limits
-                            if len(tender_data) > 15:
-                                st.warning(f"Large number of tenders ({len(tender_data)}). Processing first 15 to prevent timeout.")
-                                tender_data = tender_data[:15]
-                            
-                            # Check total content size
-                            total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
-                            print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
-                            
-                            if total_chars > 500000:  # 500K chars limit
-                                st.warning("Large document set detected. Reducing content size to prevent processing timeout.")
-                                # Further truncate if needed
-                                for td in tender_data:
-                                    if len(td.get('content', '')) > 15000:
-                                        td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
-                            
-                            results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
+                        # Add memory and processing limits
+                        if len(tender_data) > 15:
+                            st.warning(f"Large number of tenders ({len(tender_data)}). Processing first 15 to prevent timeout.")
+                            tender_data = tender_data[:15]
+                        
+                        # Check total content size
+                        total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
+                        print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
+                        
+                        if total_chars > 500000:  # 500K chars limit
+                            st.warning("Large document set detected. Reducing content size to prevent processing timeout.")
+                            # Further truncate if needed
+                            for td in tender_data:
+                                if len(td.get('content', '')) > 15000:
+                                    td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
+                        
+                        results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
                         
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")

@@ -537,3 +537,73 @@ def load_document(file_content: bytes, filename: str) -> str:
         return load_excel_csv(file_content, filename)
     else:
         raise ValueError(f"Unsupported file type: {filename}")
+
+
+def filter_commercial_data_by_companies(commercial_data: dict, uploaded_company_names: list) -> dict:
+    """
+    Filter commercial data to only include companies that have actual tender submissions.
+    This prevents phantom companies from appearing in the analysis.
+    """
+    if not commercial_data or not uploaded_company_names:
+        return commercial_data
+    
+    # Convert company names to lowercase for comparison
+    uploaded_names_lower = [name.lower().strip() for name in uploaded_company_names]
+    
+    try:
+        filtered_data = commercial_data.copy()
+        
+        # Process each sheet
+        for sheet_name, sheet_data in commercial_data.get("sheets", {}).items():
+            if sheet_data.get("format_type") == "financial_comparison":
+                # Filter bidders in financial comparison format
+                original_bidders = sheet_data.get("bidders", [])
+                filtered_bidders = []
+                filtered_financial_columns = []
+                
+                for i, bidder in enumerate(original_bidders):
+                    bidder_lower = bidder.lower().strip()
+                    # Check if this bidder matches any uploaded company
+                    if any(uploaded_name in bidder_lower or bidder_lower in uploaded_name 
+                           for uploaded_name in uploaded_names_lower):
+                        filtered_bidders.append(bidder)
+                        if i < len(sheet_data.get("financial_columns", [])):
+                            filtered_financial_columns.append(sheet_data["financial_columns"][i])
+                
+                print(f"DEBUG: Filtered bidders from {len(original_bidders)} to {len(filtered_bidders)}")
+                print(f"DEBUG: Original: {original_bidders}")
+                print(f"DEBUG: Filtered: {filtered_bidders}")
+                
+                # Update sheet data with filtered bidders
+                if filtered_bidders:
+                    filtered_data["sheets"][sheet_name]["bidders"] = filtered_bidders
+                    filtered_data["sheets"][sheet_name]["financial_columns"] = filtered_financial_columns
+                    
+                    # Filter financial summary
+                    original_summary = sheet_data.get("financial_summary", {})
+                    filtered_summary = {bidder: data for bidder, data in original_summary.items() 
+                                      if bidder in filtered_bidders}
+                    filtered_data["sheets"][sheet_name]["financial_summary"] = filtered_summary
+                    
+                    # Filter sections
+                    filtered_sections = []
+                    for section in sheet_data.get("sections", []):
+                        filtered_section = section.copy()
+                        filtered_section["bidder_amounts"] = {
+                            bidder: amount for bidder, amount in section.get("bidder_amounts", {}).items()
+                            if bidder in filtered_bidders
+                        }
+                        filtered_sections.append(filtered_section)
+                    filtered_data["sheets"][sheet_name]["sections"] = filtered_sections
+                else:
+                    # No matching bidders found, remove this sheet
+                    print(f"DEBUG: No matching bidders found in sheet {sheet_name}, removing from analysis")
+                    del filtered_data["sheets"][sheet_name]
+            
+            # Could add filtering for other format types here if needed
+        
+        return filtered_data
+        
+    except Exception as e:
+        print(f"WARNING: Error filtering commercial data: {e}")
+        return commercial_data  # Return original if filtering fails
