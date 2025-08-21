@@ -244,13 +244,14 @@ def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS
         except Exception as e:
             st.warning(f"Could not process commercial document {nm}: {str(e)}")
 
-    # Tenders
+    # Tenders - now with accurate company names
     for t in uploaded_docs["tenders"]:
         nm = t["name"]
         try:
             txt = load_document(t["content"], nm)
             if txt.strip():
-                comp = extract_company_name(nm)
+                # Use accurate company name from metadata instead of filename parsing
+                comp = t.get("company", extract_company_name(nm))  # Fallback to filename parsing if no company metadata
                 companies.add(comp)
                 for ch in chunk_text(txt)[:max_per_file]:
                     all_chunks.append(_prefix(f"Tender Response from {comp}", nm, ch))
@@ -419,39 +420,117 @@ def generate_report_tab():
 
     st.subheader("Upload documents")
 
-    # RFP — give a real label and hide it visually (fixes accessibility warning)
+    # Initialize session state for company-based uploads
+    if "companies" not in st.session_state:
+        st.session_state.companies = []
+    if "current_company" not in st.session_state:
+        st.session_state.current_company = {"name": "", "files": []}
+
+    # RFP Document (unchanged)
     st.markdown("**RFP Document**")
     rfp_file = st.file_uploader("RFP Document", type=["pdf", "docx", "xlsx", "xls", "csv"],
                                 key="rfp_uploader", label_visibility="collapsed")
     if rfp_file:
         st.session_state.uploaded_documents["rfp"] = {"name": rfp_file.name, "content": rfp_file.getvalue()}
 
-    # Commercial
+    # Commercial Analysis (unchanged)
     st.markdown("**Commercial Analysis**  _(optional)_")
     commercial_file = st.file_uploader("Commercial Analysis", type=["pdf", "docx", "xlsx", "xls", "csv"],
                                        key="comm_uploader", label_visibility="collapsed")
     if commercial_file:
         st.session_state.uploaded_documents["commercial"] = {"name": commercial_file.name, "content": commercial_file.getvalue()}
 
-    # Tenders
-    st.markdown("**Tender Responses**")
-    tender_files = st.file_uploader("Tender Responses", type=["pdf", "docx", "xlsx", "xls", "csv"],
-                                    accept_multiple_files=True, key="tender_uploader", label_visibility="collapsed")
-    if tender_files:
-        st.session_state.uploaded_documents["tenders"] = [{"name": f.name, "content": f.getvalue()} for f in tender_files]
+    st.divider()
 
-    with st.expander("Uploaded"):
+    # Company-based tender uploads
+    st.markdown("**Tender Responses by Company**")
+    
+    # Add new company section
+    with st.expander("➕ Add Tender Submission", expanded=len(st.session_state.companies) == 0):
+        company_name = st.text_input("Company Name", placeholder="Enter company name (e.g., ABC Construction)")
+        
+        # Full width upload area
+        company_files = st.file_uploader(
+            "Upload Company Documents", 
+            type=["pdf", "docx", "xlsx", "xls", "csv"],
+            accept_multiple_files=True, 
+            key=f"company_uploader_{len(st.session_state.companies)}"
+        )
+        
+        # Full width button below upload area
+        add_company = st.button("Add Company", type="primary", use_container_width=True)
+
+        if add_company and company_name and company_files:
+            # Add company to list
+            company_data = {
+                "name": company_name,
+                "files": [{"name": f.name, "content": f.getvalue()} for f in company_files]
+            }
+            st.session_state.companies.append(company_data)
+            st.success(f"✅ Added {company_name} with {len(company_files)} documents")
+            st.rerun()
+        elif add_company and (not company_name or not company_files):
+            st.error("Please enter company name and upload at least one document")
+
+    # Display added companies
+    if st.session_state.companies:
+        st.markdown("**Added Companies:**")
+        for i, company in enumerate(st.session_state.companies):
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{company['name']}** ({len(company['files'])} documents)")
+                    for file in company['files']:
+                        st.write(f"  • {file['name']}")
+                with col2:
+                    if st.button("Edit", key=f"edit_{i}"):
+                        st.session_state.edit_company_index = i
+                with col3:
+                    if st.button("Remove", key=f"remove_{i}"):
+                        st.session_state.companies.pop(i)
+                        st.rerun()
+                st.divider()
+
+        # Convert companies to old format for compatibility with existing analysis code
+        all_tender_files = []
+        for company in st.session_state.companies:
+            for file in company['files']:
+                # Add company name to file metadata
+                file_with_company = {
+                    "name": file['name'],
+                    "content": file['content'],
+                    "company": company['name']
+                }
+                all_tender_files.append(file_with_company)
+        
+        # Update session state in old format for compatibility
+        st.session_state.uploaded_documents["tenders"] = all_tender_files
+
+    # Show upload summary
+    with st.expander("📋 Upload Summary"):
         ud = st.session_state.uploaded_documents
-        if ud["rfp"]: st.write(f"RFP: {ud['rfp']['name']}")
-        if ud["commercial"]: st.write(f"Commercial Analysis: {ud['commercial']['name']}")
-        for i, t in enumerate(ud["tenders"], 1):
-            st.write(f"Tender {i}: {t['name']}")
+        if ud["rfp"]: 
+            st.write(f"✅ **RFP:** {ud['rfp']['name']}")
+        else:
+            st.write("❌ **RFP:** Not uploaded")
+            
+        if ud["commercial"]: 
+            st.write(f"✅ **Commercial Analysis:** {ud['commercial']['name']}")
+        else:
+            st.write("ℹ️ **Commercial Analysis:** Optional - not provided")
+            
+        if st.session_state.companies:
+            st.write(f"✅ **Companies:** {len(st.session_state.companies)} companies with {len(ud.get('tenders', []))} total documents")
+            for company in st.session_state.companies:
+                st.write(f"  • **{company['name']}:** {len(company['files'])} documents")
+        else:
+            st.write("❌ **Tender Responses:** No companies added")
 
     st.divider()
     st.subheader("Run analysis")
 
     ud = st.session_state.uploaded_documents
-    if ud["rfp"] and ud["tenders"]:
+    if ud["rfp"] and ud.get("tenders") and len(st.session_state.companies) > 0:
         if st.button("Generate comprehensive report", type="primary", use_container_width=True):
             with st.spinner("Analyzing documents…"):
                 try:
@@ -557,11 +636,19 @@ def generate_report_tab():
                             # 20K chars per tender (roughly 15K tokens each) - much more comprehensive
                             raw_content = content[:20000] if len(content) > 20000 else content
                             
-                            tender_data.append({
+                            # Include company information in tender data
+                            tender_entry = {
                                 "name": t["name"], 
                                 "content": raw_content
-                            })
-                            print(f"DEBUG: Prepared tender data for {t['name']} - {len(raw_content)} chars")
+                            }
+                            # Add company name if available
+                            if "company" in t:
+                                tender_entry["company"] = t["company"]
+                                print(f"DEBUG: Prepared tender data for {t['company']} - {t['name']} - {len(raw_content)} chars")
+                            else:
+                                print(f"DEBUG: Prepared tender data for {t['name']} - {len(raw_content)} chars")
+                            
+                            tender_data.append(tender_entry)
                         except Exception as e:
                             st.error(f"Error preparing tender data for {t['name']}: {str(e)}")
                             return
