@@ -445,53 +445,67 @@ def generate_report_tab():
     # Company-based tender uploads
     st.markdown("**Tender Responses by Company**")
     
+    # Initialize session state for form management
+    if "form_expanded" not in st.session_state:
+        st.session_state.form_expanded = len(st.session_state.companies) == 0
+    if "form_reset_counter" not in st.session_state:
+        st.session_state.form_reset_counter = 0
+    
     # Add new company section
-    with st.expander("➕ Add Tender Submission", expanded=len(st.session_state.companies) == 0):
-        company_name = st.text_input("Company Name", placeholder="Enter company name (e.g., ABC Construction)")
+    with st.expander("Add Tender Submission", expanded=st.session_state.form_expanded):
+        # Use unique keys that change when we reset the form
+        company_name = st.text_input(
+            "Company Name", 
+            placeholder="Enter company name (e.g., ABC Construction)",
+            key=f"company_name_input_{st.session_state.form_reset_counter}"
+        )
         
-        # Full width upload area
+        # Full width upload area with unique key that resets
         company_files = st.file_uploader(
             "Upload Company Documents", 
             type=["pdf", "docx", "xlsx", "xls", "csv"],
             accept_multiple_files=True, 
-            key=f"company_uploader_{len(st.session_state.companies)}"
+            key=f"company_uploader_{st.session_state.form_reset_counter}"
         )
         
         # Full width button below upload area
         add_company = st.button("Add Company", type="primary", use_container_width=True)
 
         if add_company and company_name and company_files:
-            # Add company to list
-            company_data = {
-                "name": company_name,
-                "files": [{"name": f.name, "content": f.getvalue()} for f in company_files]
-            }
-            st.session_state.companies.append(company_data)
-            st.success(f"✅ Added {company_name} with {len(company_files)} documents")
+            # Check if company already exists
+            existing_company_index = None
+            for i, company in enumerate(st.session_state.companies):
+                if company['name'].lower().strip() == company_name.lower().strip():
+                    existing_company_index = i
+                    break
+            
+            new_files = [{"name": f.name, "content": f.getvalue()} for f in company_files]
+            
+            if existing_company_index is not None:
+                # Append files to existing company
+                st.session_state.companies[existing_company_index]['files'].extend(new_files)
+                st.success(f"✅ Added {len(company_files)} more documents to {company_name}")
+            else:
+                # Create new company entry
+                company_data = {
+                    "name": company_name,
+                    "files": new_files
+                }
+                st.session_state.companies.append(company_data)
+                st.success(f"✅ Successfully added {company_name} with {len(company_files)} documents")
+            
+            # Reset form by incrementing counter (this will clear both inputs)
+            st.session_state.form_reset_counter += 1
+            st.session_state.form_expanded = True
+            st.rerun()
+            st.session_state.new_company_name = ""
+            
             st.rerun()
         elif add_company and (not company_name or not company_files):
             st.error("Please enter company name and upload at least one document")
 
-    # Display added companies
+    # Convert companies to old format for compatibility with existing analysis code
     if st.session_state.companies:
-        st.markdown("**Added Companies:**")
-        for i, company in enumerate(st.session_state.companies):
-            with st.container():
-                col1, col2, col3 = st.columns([3, 1, 1])
-                with col1:
-                    st.write(f"**{company['name']}** ({len(company['files'])} documents)")
-                    for file in company['files']:
-                        st.write(f"  • {file['name']}")
-                with col2:
-                    if st.button("Edit", key=f"edit_{i}"):
-                        st.session_state.edit_company_index = i
-                with col3:
-                    if st.button("Remove", key=f"remove_{i}"):
-                        st.session_state.companies.pop(i)
-                        st.rerun()
-                st.divider()
-
-        # Convert companies to old format for compatibility with existing analysis code
         all_tender_files = []
         for company in st.session_state.companies:
             for file in company['files']:
@@ -506,25 +520,38 @@ def generate_report_tab():
         # Update session state in old format for compatibility
         st.session_state.uploaded_documents["tenders"] = all_tender_files
 
-    # Show upload summary
-    with st.expander("📋 Upload Summary"):
+    # Show upload summary - expand automatically if tender files are uploaded
+    upload_summary_expanded = len(st.session_state.companies) > 0
+    with st.expander("Upload Summary", expanded=upload_summary_expanded):
         ud = st.session_state.uploaded_documents
         if ud["rfp"]: 
-            st.write(f"✅ **RFP:** {ud['rfp']['name']}")
+            st.write(f"**RFP:** {ud['rfp']['name']}")
         else:
-            st.write("❌ **RFP:** Not uploaded")
+            st.write("**RFP:** Not uploaded")
             
         if ud["commercial"]: 
-            st.write(f"✅ **Commercial Analysis:** {ud['commercial']['name']}")
+            st.write(f"**Commercial Analysis:** {ud['commercial']['name']}")
         else:
-            st.write("ℹ️ **Commercial Analysis:** Optional - not provided")
+            st.write("**Commercial Analysis:** Optional - not provided")
             
         if st.session_state.companies:
-            st.write(f"✅ **Companies:** {len(st.session_state.companies)} companies with {len(ud.get('tenders', []))} total documents")
-            for company in st.session_state.companies:
-                st.write(f"  • **{company['name']}:** {len(company['files'])} documents")
+            st.write(f"**Companies:** {len(st.session_state.companies)} companies with {len(ud.get('tenders', []))} total documents")
+            for company_idx, company in enumerate(st.session_state.companies):
+                st.write(f"**{company['name']}** ({len(company['files'])} documents):")
+                for file_idx, file in enumerate(company['files']):
+                    col1, col2 = st.columns([10, 1])
+                    with col1:
+                        st.write(f"  • {file['name']}")
+                    with col2:
+                        if st.button("✕", key=f"remove_file_{company_idx}_{file_idx}", help=f"Remove {file['name']}", use_container_width=True):
+                            # Remove file from company
+                            st.session_state.companies[company_idx]['files'].pop(file_idx)
+                            # If no files left, remove company
+                            if not st.session_state.companies[company_idx]['files']:
+                                st.session_state.companies.pop(company_idx)
+                            st.rerun()
         else:
-            st.write("❌ **Tender Responses:** No companies added")
+            st.write("**Tender Responses:** No companies added")
 
     st.divider()
     st.subheader("Run analysis")
@@ -556,9 +583,8 @@ def generate_report_tab():
                                 st.warning(f"Skipping large file: {t['name']} ({len(t['content'])/1024/1024:.1f}MB)")
                                 continue
                             
-                            # Add progress indicator
-                            with st.spinner(f"Processing tender {i+1}/{len(ud['tenders'])}: {t['name'][:50]}..."):
-                                tender_content = load_document(t["content"], t["name"])
+                            # Process tender without additional spinner
+                            tender_content = load_document(t["content"], t["name"])
                                 
                             print(f"DEBUG: ✅ Tender {i+1} ({t['name']}) loaded - type: {type(tender_content)}, length: {len(str(tender_content))}")
                             
@@ -694,7 +720,6 @@ def generate_report_tab():
                         
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")
-                        st.success(f"✅ Analysis completed successfully!")
                         
                     except Exception as e:
                         analysis_time = time.time() - analysis_start_time

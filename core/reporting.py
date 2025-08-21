@@ -144,7 +144,7 @@ def build_markdown(data: dict) -> str:
     tech = data.get("technical_analysis", {}) or {}
     tech_rows = tech.get("detailed_assessments", []) or []
     if tech_rows:
-        md.append("\n## Technical Scores (Dashboard)")
+        md.append("\n## Technical Scores")
         md.append("| Bidder | Technical Score | Compliance | Innovation |")
         md.append("| --- | --- | --- | --- |")
         for r in tech_rows:
@@ -158,7 +158,7 @@ def build_markdown(data: dict) -> str:
     team = data.get("team_and_capacity_analysis", {}) or {}
     team_rows = team.get("assessments", []) or []
     if team_rows:
-        md.append("\n## Team & Capacity (Dashboard)")
+        md.append("\n## Team & Capacity")
         md.append("| Bidder | Team Score | PM (yrs/quals) | UAE Experience |")
         md.append("| --- | --- | --- | --- |")
         for r in team_rows:
@@ -172,7 +172,7 @@ def build_markdown(data: dict) -> str:
     fin = data.get("financial_analysis", {}) or {}
     fin_rows = fin.get("cost_breakdown_analysis", []) or []
     if fin_rows:
-        md.append("\n## Financial Summary (Dashboard)")
+        md.append("\n## Financial Summary")
         md.append("| Bidder | Total (AED) | Financial Score | Value Tag |")
         md.append("| --- | --- | --- | --- |")
         for r in fin_rows:
@@ -186,7 +186,7 @@ def build_markdown(data: dict) -> str:
     tl = data.get("timeline_and_delivery_analysis", {}) or {}
     tl_rows = tl.get("schedule_evaluation", []) or []
     if tl_rows:
-        md.append("\n## Timeline & Delivery (Dashboard)")
+        md.append("\n## Timeline & Delivery")
         md.append("| Bidder | Proposed Timeline | Timeline Score | Delivery Confidence |")
         md.append("| --- | --- | --- | --- |")
         for r in tl_rows:
@@ -200,7 +200,7 @@ def build_markdown(data: dict) -> str:
     comp = data.get("compliance_and_regulatory_analysis", {}) or {}
     comp_rows = comp.get("assessments", []) or []
     if comp_rows:
-        md.append("\n## Compliance (Dashboard)")
+        md.append("\n## Compliance")
         md.append("| Bidder | Compliance Score | Key Gaps |")
         md.append("| --- | --- | --- |")
         for r in comp_rows:
