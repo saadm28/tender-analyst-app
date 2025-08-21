@@ -85,37 +85,38 @@ except Exception:
     # Fallback for local (no secrets)
     DEBUG = False
 
-# Add UI debug toggle
-DEBUG = DEBUG or st.checkbox("🐛 Show debug info on screen", value=False)
+# Only show debug UI if explicitly enabled
+if DEBUG:
+    # Add UI debug toggle
+    DEBUG = st.checkbox("🐛 Show debug info on screen", value=DEBUG)
 
-# Streamlit Cloud startup diagnostics
-st.write("🔧 **Startup Diagnostics**")
-st.write(f"- Python version: {sys.version}")
-st.write(f"- Streamlit version: {st.__version__}")
-st.write(f"- Current working directory: {os.getcwd()}")
-st.write(f"- App file location: {os.path.abspath(__file__)}")
-st.write(f"- Core directory exists at root: {os.path.exists('core')}")
-st.write(f"- Core directory exists in app: {os.path.exists('app/core')}")
+    if DEBUG:
+        # Streamlit Cloud startup diagnostics (only when debug enabled)
+        with st.expander("🔧 Startup Diagnostics", expanded=False):
+            st.write(f"- Python version: {sys.version}")
+            st.write(f"- Streamlit version: {st.__version__}")
+            st.write(f"- Current working directory: {os.getcwd()}")
+            st.write(f"- App file location: {os.path.abspath(__file__)}")
+            st.write(f"- Core directory exists at root: {os.path.exists('core')}")
+            st.write(f"- Core directory exists in app: {os.path.exists('app/core')}")
 
-# Check core module files
-core_files = ['llm.py', 'parsing.py', 'rag.py', 'analysis.py', 'reporting.py']
-st.write("**Core module files (root level):**")
-for file in core_files:
-    file_path = os.path.join('core', file)
-    exists = os.path.exists(file_path)
-    st.write(f"  - {file}: {'✅' if exists else '❌'}")
+            # Check core module files
+            core_files = ['llm.py', 'parsing.py', 'rag.py', 'analysis.py', 'reporting.py']
+            st.write("**Core module files (root level):**")
+            for file in core_files:
+                file_path = os.path.join('core', file)
+                exists = os.path.exists(file_path)
+                st.write(f"  - {file}: {'✅' if exists else '❌'}")
 
-# Environment variables check
-st.write("**Environment Variables:**")
-env_vars = ["OPENAI_API_KEY", "OPENAI_RESPONSES_MODEL", "OPENAI_EMBEDDINGS_MODEL"]
-for var in env_vars:
-    value = os.getenv(var)
-    if value:
-        st.write(f"  - {var}: ✅ Set ({value[:10]}...)")
-    else:
-        st.write(f"  - {var}: ❌ Not set")
-
-st.divider()
+            # Environment variables check
+            st.write("**Environment Variables:**")
+            env_vars = ["OPENAI_API_KEY", "OPENAI_RESPONSES_MODEL", "OPENAI_EMBEDDINGS_MODEL"]
+            for var in env_vars:
+                value = os.getenv(var)
+                if value:
+                    st.write(f"  - {var}: ✅ Set ({value[:10]}...)")
+                else:
+                    st.write(f"  - {var}: ❌ Not set")
 
 def debug_print(message, show_in_ui=None):
     """Print debug message to terminal and optionally to Streamlit UI"""
@@ -584,31 +585,29 @@ def generate_report_tab():
                     analysis_start_time = time.time()
                     
                     try:
-                        # Show progress to user
-                        progress_container = st.empty()
-                        progress_container.info("🔄 Running AI analysis on documents... This may take 2-3 minutes.")
-                        
-                        # Add memory and processing limits
-                        if len(tender_data) > 15:
-                            st.warning(f"Large number of tenders ({len(tender_data)}). Processing first 15 to prevent timeout.")
-                            tender_data = tender_data[:15]
-                        
-                        # Check total content size
-                        total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
-                        print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
-                        
-                        if total_chars > 500000:  # 500K chars limit
-                            st.warning("Large document set detected. Reducing content size to prevent processing timeout.")
-                            # Further truncate if needed
-                            for td in tender_data:
-                                if len(td.get('content', '')) > 15000:
-                                    td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
-                        
-                        results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
+                        # Simple progress indicator
+                        with st.spinner("Analyzing documents..."):
+                            # Add memory and processing limits
+                            if len(tender_data) > 15:
+                                st.warning(f"Large number of tenders ({len(tender_data)}). Processing first 15 to prevent timeout.")
+                                tender_data = tender_data[:15]
+                            
+                            # Check total content size
+                            total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
+                            print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
+                            
+                            if total_chars > 500000:  # 500K chars limit
+                                st.warning("Large document set detected. Reducing content size to prevent processing timeout.")
+                                # Further truncate if needed
+                                for td in tender_data:
+                                    if len(td.get('content', '')) > 15000:
+                                        td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
+                            
+                            results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
                         
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")
-                        progress_container.success(f"✅ Analysis completed in {analysis_time:.1f} seconds")
+                        st.success(f"✅ Analysis completed successfully!")
                         
                     except Exception as e:
                         analysis_time = time.time() - analysis_start_time
