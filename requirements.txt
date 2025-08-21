@@ -8,6 +8,11 @@ pdfplumber>=0.11.0
 pypdf>=4.2.0
 python-docx>=1.1.0
 
+# OCR capabilities
+pytesseract>=0.3.10
+PyMuPDF>=1.20.0
+Pillow>=10.0.0
+
 # Data processing
 pandas>=2.1.0
 openpyxl>=3.1.0
