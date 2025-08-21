@@ -580,13 +580,41 @@ def generate_report_tab():
 
                     print("DEBUG: Starting compare_and_recommend analysis...")
                     
+                    # Add timeout protection for the analysis
+                    analysis_start_time = time.time()
+                    
                     try:
+                        # Show progress to user
+                        progress_container = st.empty()
+                        progress_container.info("🔄 Running AI analysis on documents... This may take 2-3 minutes.")
+                        
+                        # Add memory and processing limits
+                        if len(tender_data) > 15:
+                            st.warning(f"Large number of tenders ({len(tender_data)}). Processing first 15 to prevent timeout.")
+                            tender_data = tender_data[:15]
+                        
+                        # Check total content size
+                        total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
+                        print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
+                        
+                        if total_chars > 500000:  # 500K chars limit
+                            st.warning("Large document set detected. Reducing content size to prevent processing timeout.")
+                            # Further truncate if needed
+                            for td in tender_data:
+                                if len(td.get('content', '')) > 15000:
+                                    td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
+                        
                         results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
-                        print("DEBUG: ✅ compare_and_recommend completed successfully")
+                        
+                        analysis_time = time.time() - analysis_start_time
+                        print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")
+                        progress_container.success(f"✅ Analysis completed in {analysis_time:.1f} seconds")
+                        
                     except Exception as e:
-                        print(f"DEBUG: ❌ compare_and_recommend failed: {e}")
+                        analysis_time = time.time() - analysis_start_time
+                        print(f"DEBUG: ❌ compare_and_recommend failed after {analysis_time:.1f} seconds: {e}")
                         print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
-                        st.error(f"Analysis failed: {str(e)}")
+                        st.error(f"Analysis failed after {analysis_time:.1f} seconds: {str(e)}")
                         with st.expander("Analysis Error Details"):
                             st.code(traceback.format_exc())
                         return
