@@ -41,7 +41,7 @@ try:
     print("DEBUG: Importing core modules...")
     from core import llm, parsing, rag, analysis, reporting
     from core.llm import respond, embed_texts
-    from core.parsing import load_document, load_commercial_data_as_json, chunk_text, filter_commercial_data_by_companies
+    from core.parsing import load_document, chunk_text
     from core.rag import build_faiss, retrieve
     from core.analysis import compare_and_recommend
     from core.reporting import build_markdown, build_pdf_report
@@ -171,7 +171,7 @@ def init_session_state():
         debug_print("Initializing session state...")
         ss = st.session_state
         ss.setdefault("active_tab", "Home")
-        ss.setdefault("uploaded_documents", {"rfp": None, "tenders": [], "commercial": None})
+        ss.setdefault("uploaded_documents", {"rfp": None, "tenders": []})
         ss.setdefault("chatbot_docs", {"chunks": [], "index": None, "companies": [], "kb_key": None})
         ss.setdefault("chat_history", [])
         ss.setdefault("queued_question", None)
@@ -212,12 +212,343 @@ def uploads_key(uploaded_docs: dict) -> str:
                 h.update(it["name"].encode("utf-8"))
                 h.update(it["content"])
     upd(uploaded_docs.get("rfp"))
-    upd(uploaded_docs.get("commercial"))
     upd(uploaded_docs.get("tenders", []))
+    
+    # Include financial data in the cache key
+    if hasattr(st.session_state, 'companies') and st.session_state.companies:
+        for company in st.session_state.companies:
+            # Add company name to hash
+            h.update(company['name'].encode("utf-8"))
+            # Add financial file data if present
+            if company.get('financials'):
+                h.update(company['financials']['name'].encode("utf-8"))
+                h.update(company['financials']['content'])
+    
     return h.hexdigest()
 
 def _prefix(src: str, name: str, text: str) -> str:
     return f"[{src}: {name}]\n{text}".strip()
+
+def generate_combined_financial_summary(companies_with_financials):
+    """
+    Extract MAIN SUMMARY tables from each company's financial Excel file
+    and combine them into a single structured dataset matching the original template format.
+    """
+    try:
+        import pandas as pd
+        import io
+        
+        print(f"DEBUG: Starting financial summary generation for {len(companies_with_financials)} companies")
+        
+        # Dictionary to store all company data by section
+        companies_data = {}
+        all_sections = set()
+        
+        # Process each company's individual Excel file
+        for company in companies_with_financials:
+            try:
+                company_name = company['name']
+                
+                if not company.get('financials'):
+                    print(f"DEBUG: Company {company_name} has no financials data")
+                    continue
+                    
+                financial_file = company['financials']
+                print(f"DEBUG: Processing financial data for {company_name}")
+                
+                # Read the Excel file
+                file_content = financial_file['content']
+                if not file_content:
+                    print(f"WARNING: Empty financial file for {company_name}")
+                    continue
+                    
+                excel_data = pd.read_excel(io.BytesIO(file_content), sheet_name=None)
+                
+                # Look for MAIN SUMMARY sheet
+                main_summary_sheet = None
+                for sheet_name, sheet_data in excel_data.items():
+                    if 'main summary' in sheet_name.lower() or 'summary' in sheet_name.lower():
+                        main_summary_sheet = sheet_data
+                        print(f"DEBUG: Found summary sheet '{sheet_name}' for {company_name}")
+                        break
+                
+                if main_summary_sheet is None and excel_data:
+                    # Use first sheet if no summary sheet found
+                    first_sheet_name = list(excel_data.keys())[0]
+                    main_summary_sheet = excel_data[first_sheet_name]
+                    print(f"DEBUG: Using first sheet '{first_sheet_name}' for {company_name}")
+                
+                if main_summary_sheet is None:
+                    print(f"WARNING: No data found in Excel file for {company_name}")
+                    continue
+                
+                # Initialize company data structure
+                companies_data[company_name] = {}
+                company_total = 0
+                
+                # Find column indices for section data (vertical layout)
+                section_id_col = 0
+                section_desc_col = 1  
+                amount_col = 2
+                cost_per_sqm_col = 3
+                
+                # Look for headers to confirm column positions
+                for index in range(min(5, len(main_summary_sheet))):
+                    row = main_summary_sheet.iloc[index]
+                    for col_idx, cell_value in enumerate(row):
+                        if pd.notna(cell_value):
+                            cell_str = str(cell_value).lower().strip()
+                            if 'section no' in cell_str:
+                                section_id_col = col_idx
+                            elif 'section description' in cell_str:
+                                section_desc_col = col_idx  
+                            elif 'amount' in cell_str and 'aed' in cell_str:
+                                amount_col = col_idx
+                            elif 'cost' in cell_str and ('sq' in cell_str or 'm' in cell_str):
+                                cost_per_sqm_col = col_idx
+                
+                print(f"DEBUG: Using columns - ID: {section_id_col}, Desc: {section_desc_col}, Amount: {amount_col}, Cost/sqm: {cost_per_sqm_col}")
+                
+                # Extract financial data row by row (skip header rows)
+                for index, row in main_summary_sheet.iterrows():
+                    try:
+                        if index < 3:  # Skip header rows
+                            continue
+                            
+                        # Get section identifier and description
+                        section_id = ""
+                        if len(row) > section_id_col and pd.notna(row.iloc[section_id_col]):
+                            section_id = str(row.iloc[section_id_col]).strip()
+                        
+                        section_desc = ""
+                        if len(row) > section_desc_col and pd.notna(row.iloc[section_desc_col]):
+                            section_desc = str(row.iloc[section_desc_col]).strip()
+                        
+                        # Skip if not a valid section
+                        if not section_id or not section_desc or section_desc in ['nan', 'None']:
+                            continue
+                            
+                        # Skip if section ID is too long (likely not a real section)
+                        if len(section_id) > 3:
+                            continue
+                            
+                        # Get amount value
+                        amount_val = None
+                        if len(row) > amount_col and pd.notna(row.iloc[amount_col]):
+                            try:
+                                raw_val = row.iloc[amount_col]
+                                if isinstance(raw_val, (int, float)):
+                                    amount_val = float(raw_val)
+                                elif isinstance(raw_val, str):
+                                    # Clean string and convert
+                                    cleaned_val = raw_val.replace(',', '').replace('AED', '').strip()
+                                    amount_val = float(cleaned_val)
+                                
+                                if amount_val and amount_val > 0:
+                                    # Round to 2 decimal places for consistent formatting
+                                    amount_val = round(amount_val, 2)
+                                    company_total += amount_val
+                                    
+                                    # Store section data
+                                    companies_data[company_name][section_desc.upper()] = amount_val
+                                    all_sections.add(section_desc.upper())
+                                    print(f"DEBUG: Added section {section_id} - {section_desc}: AED {amount_val:,.2f}")
+                                    
+                            except (ValueError, TypeError) as e:
+                                print(f"DEBUG: Could not convert amount '{row.iloc[amount_col]}' for section {section_id}: {e}")
+                                pass
+                                
+                    except Exception as e:
+                        print(f"DEBUG: Error processing row {index} for {company_name}: {e}")
+                        continue
+                
+                # Store company total
+                if company_total > 0:
+                    companies_data[company_name]['SUBTOTAL'] = round(company_total, 2)
+                    print(f"DEBUG: Company {company_name} total: {company_total:.2f}")
+                    
+                print(f"DEBUG: ✅ Extracted data for {company_name}")
+                
+            except Exception as e:
+                print(f"ERROR: Failed to process financial data for {company['name']}: {e}")
+                continue
+        
+        print(f"DEBUG: Total companies processed: {len(companies_data)}")
+        
+        if companies_data:
+            # Create the exact template structure matching the original format
+            template_data = []
+            
+            # Standard sections from the original template (A-L)
+            standard_sections = [
+                ("A", "GENERAL REQUIREMENTS"),
+                ("B", "FLOORING WORKS"), 
+                ("C", "WALL WORKS"),
+                ("D", "CEILING WORKS"),
+                ("E", "DOORS & GLASS"),
+                ("F", "JOINERY & FIT-OUT"),
+                ("G", "FURNITURE, FIXTURE & EQUIPMENT"),
+                ("H", "MECHANICAL WORKS"),
+                ("I", "ELECTRICAL WORKS"),
+                ("J", "PLUMBING WORKS"),
+                ("K", "FIRE FIGHTING SYSTEM"),
+                ("L", "OTHERS")
+            ]
+            
+            # Create each section row
+            for section_id, section_desc in standard_sections:
+                row_data = {
+                    'Section No.': section_id,
+                    'Section Description': section_desc
+                }
+                
+                # Add amounts for each company
+                for company_name in companies_data.keys():
+                    company_data = companies_data[company_name]
+                    amount = 0.0
+                    
+                    # Use exact section matching to prevent duplicates
+                    exact_matches = {
+                        "GENERAL REQUIREMENTS": ["GENERAL REQUIREMENTS"],
+                        "FLOORING WORKS": ["FLOORING WORKS"],
+                        "WALL WORKS": ["WALL WORKS"], 
+                        "CEILING WORKS": ["CEILING WORKS"],
+                        "DOORS & GLASS": ["DOORS & GLASS", "DOORS AND GLASS"],
+                        "JOINERY & FIT-OUT": ["JOINERY & FIT-OUT", "JOINERY AND FIT-OUT"],
+                        "FURNITURE, FIXTURE & EQUIPMENT": ["FURNITURE, FIXTURE & EQUIPMENT", "FF&E"],
+                        "MECHANICAL WORKS": ["MECHANICAL WORKS"],
+                        "ELECTRICAL WORKS": ["ELECTRICAL WORKS"],
+                        "PLUMBING WORKS": ["PLUMBING WORKS"],
+                        "FIRE FIGHTING SYSTEM": ["FIRE FIGHTING SYSTEM"],
+                        "OTHERS": ["OTHERS", "MEP", "DEMOLITION WORKS", "ADDITIONAL ITEM"]
+                    }
+                    
+                    # Look for exact matches only to prevent duplicates
+                    possible_matches = exact_matches.get(section_desc, [])
+                    for match_desc in possible_matches:
+                        if match_desc.upper() in company_data:
+                            amount = company_data[match_desc.upper()]
+                            break
+                    
+                    row_data[f'{company_name}\n(Amount in AED)'] = f"{amount:,.2f}" if amount > 0 else ""
+                
+                template_data.append(row_data)
+            
+            # Add SUB TOTAL row
+            subtotal_row = {
+                'Section No.': '',
+                'Section Description': 'SUB TOTAL'
+            }
+            
+            for company_name in companies_data.keys():
+                total = companies_data[company_name].get('SUBTOTAL', 0)
+                subtotal_row[f'{company_name}\n(Amount in AED)'] = f"{total:,.2f}" if total > 0 else ""
+            
+            template_data.append(subtotal_row)
+            
+            # Create DataFrame
+            df = pd.DataFrame(template_data)
+            
+            print(f"DEBUG: Generated financial summary with {len(df)} rows and {len(df.columns)} columns")
+            print(f"DEBUG: Columns: {list(df.columns)}")
+            
+            return df
+        else:
+            print("WARNING: No financial data could be extracted from any company files")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        print(f"ERROR: Failed to generate combined financial summary: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
+
+def generate_financial_text_summary(company):
+    """
+    Generate a readable text summary of a company's financial data for chatbot chunks.
+    """
+    try:
+        import pandas as pd
+        import io
+        
+        company_name = company['name']
+        financial_file = company.get('financials')
+        
+        if not financial_file:
+            return None
+            
+        print(f"DEBUG: Generating financial text summary for {company_name}")
+        
+        # Read the Excel file
+        financial_bytes = io.BytesIO(financial_file['content'])
+        
+        # Try to find MAIN SUMMARY sheet
+        excel_file = pd.ExcelFile(financial_bytes)
+        main_summary_sheet = None
+        
+        # Look for MAIN SUMMARY sheet
+        for sheet_name in excel_file.sheet_names:
+            if 'main' in sheet_name.lower() and 'summary' in sheet_name.lower():
+                main_summary_sheet = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                break
+        
+        if main_summary_sheet is None:
+            print(f"DEBUG: No MAIN SUMMARY sheet found for {company_name}")
+            return None
+            
+        # Find the company's column in the horizontal layout
+        company_col_index = None
+        for col_idx in range(len(main_summary_sheet.columns)):
+            for row_idx in range(min(5, len(main_summary_sheet))):
+                cell_value = main_summary_sheet.iloc[row_idx, col_idx]
+                if pd.notna(cell_value) and company_name.lower() in str(cell_value).lower():
+                    company_col_index = col_idx
+                    break
+            if company_col_index is not None:
+                break
+                
+        if company_col_index is None:
+            return None
+            
+        # Create financial text summary
+        financial_text_lines = [
+            f"Financial Summary for {company_name}:",
+            f"Source: {financial_file['name']}",
+            ""
+        ]
+        
+        total_amount = 0
+        section_count = 0
+        
+        # Extract sections and amounts
+        for row_idx in range(len(main_summary_sheet)):
+            try:
+                section_desc = main_summary_sheet.iloc[row_idx, 1]  # Section description usually in column 1
+                amount = main_summary_sheet.iloc[row_idx, company_col_index]
+                
+                if pd.notna(section_desc) and pd.notna(amount):
+                    section_desc = str(section_desc).strip()
+                    if section_desc and str(amount).replace('.', '').replace(',', '').isdigit():
+                        amount_float = float(str(amount).replace(',', ''))
+                        if amount_float > 0:
+                            financial_text_lines.append(f"{section_desc}: AED {amount_float:,.2f}")
+                            total_amount += amount_float
+                            section_count += 1
+            except:
+                continue
+                
+        financial_text_lines.extend([
+            "",
+            f"Total Sections: {section_count}",
+            f"Total Project Amount: AED {total_amount:,.2f}"
+        ])
+        
+        return "\n".join(financial_text_lines)
+        
+    except Exception as e:
+        print(f"ERROR: Failed to generate financial text summary for {company_name}: {e}")
+        return None
+
 
 def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS_PER_FILE) -> Tuple[List[str], List[str]]:
     all_chunks, companies = [], set()
@@ -233,17 +564,6 @@ def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS
         except Exception as e:
             st.warning(f"Could not process RFP {nm}: {str(e)}")
 
-    # Commercial
-    if uploaded_docs["commercial"]:
-        nm = uploaded_docs["commercial"]["name"]
-        try:
-            txt = load_document(uploaded_docs["commercial"]["content"], nm)
-            if txt.strip():
-                for ch in chunk_text(txt)[:max_per_file]:
-                    all_chunks.append(_prefix("Commercial Document", nm, ch))
-        except Exception as e:
-            st.warning(f"Could not process commercial document {nm}: {str(e)}")
-
     # Tenders - now with accurate company names
     for t in uploaded_docs["tenders"]:
         nm = t["name"]
@@ -257,6 +577,25 @@ def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS
                     all_chunks.append(_prefix(f"Tender Response from {comp}", nm, ch))
         except Exception as e:
             st.warning(f"Could not process tender {nm}: {str(e)}")
+
+    # Add financial data chunks if available in session state
+    if hasattr(st.session_state, 'companies') and st.session_state.companies:
+        print("DEBUG: Adding financial data chunks to knowledge base")
+        for company in st.session_state.companies:
+            company_name = company['name']
+            companies.add(company_name)
+            
+            # Add financial data if available
+            if company.get('financials'):
+                try:
+                    financial_text = generate_financial_text_summary(company)
+                    if financial_text:
+                        # Create financial data chunks
+                        for ch in chunk_text(financial_text)[:max_per_file]:
+                            all_chunks.append(_prefix(f"Financial Data from {company_name}", company['financials']['name'], ch))
+                        print(f"DEBUG: Added financial chunks for {company_name}")
+                except Exception as e:
+                    print(f"ERROR: Failed to process financial data for {company_name}: {e}")
 
     return all_chunks, sorted(companies)
 
@@ -392,7 +731,7 @@ def home_tab():
     # Feature cards — equal width & height
     st.markdown("<div class='cards-wrap'>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3, gap="medium")
-    with c1: st.markdown("<div class='card'><h4>1 · Upload</h4>RFP, tender responses, and optional commercial analysis (PDF/DOCX/CSV/XLSX).</div>", unsafe_allow_html=True)
+    with c1: st.markdown("<div class='card'><h4>1 · Upload</h4>RFP, tender responses with company financials (PDF/DOCX/XLSX).</div>", unsafe_allow_html=True)
     with c2: st.markdown("<div class='card'><h4>2 · Analyze</h4>Structured summaries, risk flags, and a clean side-by-side comparison.</div>", unsafe_allow_html=True)
     with c3: st.markdown("<div class='card'><h4>3 · Report & Chat</h4>Export a polished PDF and ask questions in a focused Chatbot.</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -411,6 +750,7 @@ def home_tab():
     st.info("Open **Generate Report** to upload files and run analysis. The Chatbot will use the same documents.")
 
 def generate_report_tab():
+    import pandas as pd
     _inject_css()
     st.title("Generate Report")
 
@@ -423,22 +763,13 @@ def generate_report_tab():
     # Initialize session state for company-based uploads
     if "companies" not in st.session_state:
         st.session_state.companies = []
-    if "current_company" not in st.session_state:
-        st.session_state.current_company = {"name": "", "files": []}
-
-    # RFP Document (unchanged)
+    
+    # RFP Document Upload
     st.markdown("**RFP Document**")
-    rfp_file = st.file_uploader("RFP Document", type=["pdf", "docx", "xlsx", "xls", "csv"],
+    rfp_file = st.file_uploader("Upload RFP Document", type=["pdf", "docx", "xlsx", "xls", "csv"],
                                 key="rfp_uploader", label_visibility="collapsed")
     if rfp_file:
         st.session_state.uploaded_documents["rfp"] = {"name": rfp_file.name, "content": rfp_file.getvalue()}
-
-    # Commercial Analysis (unchanged)
-    st.markdown("**Commercial Analysis**  _(optional)_")
-    commercial_file = st.file_uploader("Commercial Analysis", type=["pdf", "docx", "xlsx", "xls", "csv"],
-                                       key="comm_uploader", label_visibility="collapsed")
-    if commercial_file:
-        st.session_state.uploaded_documents["commercial"] = {"name": commercial_file.name, "content": commercial_file.getvalue()}
 
     st.divider()
 
@@ -460,18 +791,30 @@ def generate_report_tab():
             key=f"company_name_input_{st.session_state.form_reset_counter}"
         )
         
-        # Full width upload area with unique key that resets
-        company_files = st.file_uploader(
-            "Upload Company Documents", 
+        # Tender Documents Upload
+        st.markdown("**Tender Documents**")
+        tender_files = st.file_uploader(
+            "Upload Tender Documents (PDF, DOCX, etc.)", 
             type=["pdf", "docx", "xlsx", "xls", "csv"],
             accept_multiple_files=True, 
-            key=f"company_uploader_{st.session_state.form_reset_counter}"
+            key=f"tender_uploader_{st.session_state.form_reset_counter}",
+            label_visibility="collapsed"
         )
         
-        # Full width button below upload area
+        # Financial Data Upload
+        st.markdown("**Financial Data**")
+        financial_file = st.file_uploader(
+            "Upload Financial Excel File (XLSX, XLS)", 
+            type=["xlsx", "xls"],
+            accept_multiple_files=False, 
+            key=f"financial_uploader_{st.session_state.form_reset_counter}",
+            label_visibility="collapsed"
+        )
+        
+        # Full width button below upload areas
         add_company = st.button("Add Company", type="primary", use_container_width=True)
 
-        if add_company and company_name and company_files:
+        if add_company and company_name and tender_files and financial_file:
             # Check if company already exists
             existing_company_index = None
             for i, company in enumerate(st.session_state.companies):
@@ -479,30 +822,40 @@ def generate_report_tab():
                     existing_company_index = i
                     break
             
-            new_files = [{"name": f.name, "content": f.getvalue()} for f in company_files]
+            tender_files_data = [{"name": f.name, "content": f.getvalue()} for f in tender_files]
+            financial_file_data = {"name": financial_file.name, "content": financial_file.getvalue()}
             
             if existing_company_index is not None:
-                # Append files to existing company
-                st.session_state.companies[existing_company_index]['files'].extend(new_files)
-                st.success(f"✅ Added {len(company_files)} more documents to {company_name}")
+                # Update existing company
+                st.session_state.companies[existing_company_index]['files'].extend(tender_files_data)
+                st.session_state.companies[existing_company_index]['financials'] = financial_file_data
+                st.success(f"✅ Updated {company_name} with {len(tender_files)} tender documents and financial data")
             else:
                 # Create new company entry
                 company_data = {
                     "name": company_name,
-                    "files": new_files
+                    "files": tender_files_data,
+                    "financials": financial_file_data
                 }
                 st.session_state.companies.append(company_data)
-                st.success(f"✅ Successfully added {company_name} with {len(company_files)} documents")
+                st.success(f"✅ Successfully added {company_name} with {len(tender_files)} tender documents and financial data")
             
-            # Reset form by incrementing counter (this will clear both inputs)
+            # Reset form by incrementing counter (this will clear all inputs)
             st.session_state.form_reset_counter += 1
             st.session_state.form_expanded = True
             st.rerun()
-            st.session_state.new_company_name = ""
             
-            st.rerun()
-        elif add_company and (not company_name or not company_files):
-            st.error("Please enter company name and upload at least one document")
+        elif add_company and (not company_name or not tender_files or not financial_file):
+            missing = []
+            if not company_name:
+                missing.append("company name")
+            if not tender_files:
+                missing.append("tender documents")
+            if not financial_file:
+                missing.append("financial Excel file")
+            st.error(f"Please provide: {', '.join(missing)}")
+        elif add_company:
+            st.error("Please fill in all required fields")
 
     # Convert companies to old format for compatibility with existing analysis code
     if st.session_state.companies:
@@ -520,6 +873,30 @@ def generate_report_tab():
         # Update session state in old format for compatibility
         st.session_state.uploaded_documents["tenders"] = all_tender_files
 
+    # Generate combined financial summary if companies exist
+    combined_financial_csv = None
+    if st.session_state.companies:
+        try:
+            # Only regenerate if not already cached or if companies changed
+            cache_key = str([(company['name'], company.get('financials', {}).get('name', '')) for company in st.session_state.companies])
+            if not hasattr(st.session_state, 'financial_cache_key') or st.session_state.financial_cache_key != cache_key:
+                print("DEBUG: Generating financial summary...")
+                combined_financial_csv = generate_combined_financial_summary(st.session_state.companies)
+                # Store in session state for use in analysis
+                st.session_state.combined_financial_summary = combined_financial_csv
+                st.session_state.financial_cache_key = cache_key
+                print(f"DEBUG: Financial summary cached with {len(combined_financial_csv) if combined_financial_csv is not None and not combined_financial_csv.empty else 0} records")
+            else:
+                print("DEBUG: Using cached financial summary")
+                combined_financial_csv = st.session_state.get('combined_financial_summary', [])
+        except Exception as e:
+            print(f"ERROR: Financial summary generation failed: {e}")
+            import traceback
+            print(f"ERROR: Traceback: {traceback.format_exc()}")
+            st.error(f"Error processing financial data: {str(e)}")
+            combined_financial_csv = []
+            st.session_state.combined_financial_summary = []
+
     # Show upload summary - expand automatically if tender files are uploaded
     upload_summary_expanded = len(st.session_state.companies) > 0
     with st.expander("Upload Summary", expanded=upload_summary_expanded):
@@ -529,27 +906,80 @@ def generate_report_tab():
         else:
             st.write("**RFP:** Not uploaded")
             
-        if ud["commercial"]: 
-            st.write(f"**Commercial Analysis:** {ud['commercial']['name']}")
-        else:
-            st.write("**Commercial Analysis:** Optional - not provided")
-            
         if st.session_state.companies:
             st.write(f"**Companies:** {len(st.session_state.companies)} companies with {len(ud.get('tenders', []))} total documents")
             for company_idx, company in enumerate(st.session_state.companies):
-                st.write(f"**{company['name']}** ({len(company['files'])} documents):")
-                for file_idx, file in enumerate(company['files']):
+                st.write(f"**{company['name']}**")
+                
+                # Display tender documents
+                if company.get('files'):
+                    st.write(f"  Tender Documents ({len(company['files'])}):")
+                    for file_idx, file in enumerate(company['files']):
+                        col1, col2 = st.columns([10, 1])
+                        with col1:
+                            st.write(f"    • {file['name']}")
+                        with col2:
+                            if st.button("✕", key=f"remove_tender_{company_idx}_{file_idx}", help=f"Remove {file['name']}", use_container_width=True):
+                                # Remove file from company
+                                st.session_state.companies[company_idx]['files'].pop(file_idx)
+                                st.rerun()
+                
+                # Display financial file
+                if company.get('financials'):
                     col1, col2 = st.columns([10, 1])
                     with col1:
-                        st.write(f"  • {file['name']}")
+                        st.write(f"  Financial Data: {company['financials']['name']}")
                     with col2:
-                        if st.button("✕", key=f"remove_file_{company_idx}_{file_idx}", help=f"Remove {file['name']}", use_container_width=True):
-                            # Remove file from company
-                            st.session_state.companies[company_idx]['files'].pop(file_idx)
-                            # If no files left, remove company
-                            if not st.session_state.companies[company_idx]['files']:
-                                st.session_state.companies.pop(company_idx)
+                        if st.button("✕", key=f"remove_financials_{company_idx}", help=f"Remove financial file", use_container_width=True):
+                            # Remove financial file from company
+                            del st.session_state.companies[company_idx]['financials']
                             st.rerun()
+                else:
+                    st.write(f"  Financial Data: Not uploaded")
+                
+                # Remove entire company button
+                if st.button(f"🗑️ Remove {company['name']}", key=f"remove_company_{company_idx}", help=f"Remove entire company"):
+                    st.session_state.companies.pop(company_idx)
+                    st.rerun()
+                
+                st.write("")  # Add spacing between companies
+                # Show financial file info
+                if 'financial_file' in company:
+                    st.write(f"  • **Financials:** {company['financial_file']['name']}")
+            
+            # Show combined financial summary download
+            if combined_financial_csv is not None:
+                try:
+                    import pandas as pd
+                    import io
+                    
+                    # Check if we have valid data
+                    has_data = False
+                    if isinstance(combined_financial_csv, pd.DataFrame) and not combined_financial_csv.empty:
+                        has_data = True
+                    elif isinstance(combined_financial_csv, list) and len(combined_financial_csv) > 0:
+                        has_data = True
+                    
+                    if has_data:
+                        # Convert list of dicts to DataFrame then to CSV
+                        if isinstance(combined_financial_csv, pd.DataFrame):
+                            df = combined_financial_csv
+                        else:
+                            df = pd.DataFrame(combined_financial_csv)
+                        csv_buffer = io.StringIO()
+                        df.to_csv(csv_buffer, index=False)
+                        csv_data = csv_buffer.getvalue()
+                    
+                    st.download_button(
+                        label="Download Combined Financial Summary (CSV)",
+                        data=csv_data,
+                        file_name="combined_financial_summary.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    print(f"ERROR: Failed to create CSV download: {e}")
+                    st.error(f"Error preparing financial summary download: {str(e)}")
         else:
             st.write("**Tender Responses:** No companies added")
 
@@ -557,7 +987,17 @@ def generate_report_tab():
     st.subheader("Run analysis")
 
     ud = st.session_state.uploaded_documents
-    if ud["rfp"] and ud.get("tenders") and len(st.session_state.companies) > 0:
+    
+    # Check if we have all required data
+    has_rfp = ud["rfp"] is not None
+    has_companies = len(st.session_state.companies) > 0
+    has_tenders = ud.get("tenders") and len(ud.get("tenders", [])) > 0
+    
+    # Check if all companies have financial files
+    companies_with_financials = all(company.get('financials') for company in st.session_state.companies) if st.session_state.companies else False
+    
+    can_run_analysis = has_rfp and has_companies and has_tenders and companies_with_financials
+    if can_run_analysis:
         if st.button("Generate comprehensive report", type="primary", use_container_width=True):
             with st.spinner("Analyzing documents…"):
                 try:
@@ -614,47 +1054,30 @@ def generate_report_tab():
                     
                     print(f"DEBUG: Successfully loaded {len(tenders_parsed)} out of {len(ud['tenders'])} tender documents")
                     
-                    print("DEBUG: Loading commercial data...")
-                    # Process commercial data properly - check if it's CSV/Excel for structured parsing
-                    commercial_data = None
-                    if ud["commercial"]:
-                        commercial_filename = ud["commercial"]["name"].lower()
-                        try:
-                            print(f"DEBUG: Processing commercial file: {ud['commercial']['name']}")
-                            print(f"DEBUG: Commercial file size: {len(ud['commercial']['content'])} bytes")
+                    print("DEBUG: Loading financial summary data...")
+                    # Generate combined financial summary from uploaded Excel files
+                    financial_data = None
+                    try:
+                        # Check if companies have financial files uploaded
+                        companies_with_financials = [company for company in st.session_state.companies if company.get('financials')]
+                        
+                        if companies_with_financials:
+                            print(f"DEBUG: Found {len(companies_with_financials)} companies with financial files")
                             
-                            # Get list of companies that actually have tender documents
-                            uploaded_company_names = [company['name'].lower().strip() for company in st.session_state.companies]
-                            print(f"DEBUG: Companies with tender docs: {uploaded_company_names}")
+                            # Generate combined financial summary
+                            financial_data = generate_combined_financial_summary(companies_with_financials)
+                            print(f"DEBUG: ✅ Combined financial summary generated - type: {type(financial_data)}")
                             
-                            if commercial_filename.endswith(('.csv', '.xlsx', '.xls')):
-                                # Use structured JSON parsing for spreadsheet files
-                                commercial_data_raw = load_commercial_data_as_json(ud["commercial"]["content"], ud["commercial"]["name"])
-                                
-                                # Filter commercial data to only include companies that have tender submissions
-                                if isinstance(commercial_data_raw, dict):
-                                    commercial_data = filter_commercial_data_by_companies(commercial_data_raw, uploaded_company_names)
-                                    print(f"DEBUG: ✅ Commercial data filtered to only include companies with tender docs")
-                                else:
-                                    commercial_data = commercial_data_raw
-                                
-                                print(f"DEBUG: ✅ Commercial data loaded as structured JSON from {ud['commercial']['name']} - type: {type(commercial_data)}")
-                            else:
-                                # Parse as regular document for other file types
-                                commercial_data = load_document(ud["commercial"]["content"], ud["commercial"]["name"])
-                                print(f"DEBUG: ✅ Commercial data loaded as text from {ud['commercial']['name']} - type: {type(commercial_data)}")
-                                # Ensure it's a string
-                                if not isinstance(commercial_data, str):
-                                    print(f"WARNING: Commercial data returned {type(commercial_data)}, converting to string")
-                                    commercial_data = str(commercial_data)
-                        except Exception as e:
-                            print(f"DEBUG: ❌ Commercial data loading failed: {e}")
-                            st.error(f"Error loading commercial data: {str(e)}")
-                            return
-                    else:
-                        commercial_data = ""  # Ensure it's a string when no commercial data
-                        debug_print("No commercial document provided")
-                        print("DEBUG: No commercial document provided")
+                            # Store for download
+                            if financial_data is not None and ((isinstance(financial_data, pd.DataFrame) and not financial_data.empty) or (isinstance(financial_data, list) and len(financial_data) > 0)):
+                                st.session_state.combined_financial_summary = financial_data
+                        else:
+                            financial_data = ""  # Empty string when no financial data
+                            print("DEBUG: No financial files provided")
+                    except Exception as e:
+                        print(f"DEBUG: ❌ Financial summary generation failed: {e}")
+                        st.error(f"Error generating financial summary: {str(e)}")
+                        financial_data = ""
 
                     # get_response = lambda p: respond(p, GENERATION_MODEL, 0.1)
                     get_response = lambda p: respond(p, GENERATION_MODEL, 0.1, {"type": "json_object"})
@@ -695,7 +1118,7 @@ def generate_report_tab():
                     print(f"DEBUG: About to call analysis with:")
                     print(f"  RFP type: {type(rfp_txt)}")
                     print(f"  Tender data type: {type(tender_data)}, count: {len(tender_data)}")
-                    print(f"  Commercial data type: {type(commercial_data)}")
+                    print(f"  Financial data type: {type(financial_data)}")
                     
                     # Ensure all tender data contains strings
                     for i, td in enumerate(tender_data):
@@ -716,7 +1139,7 @@ def generate_report_tab():
                             tender_data = tender_data[:15]
                         
                         # Check total content size
-                        total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(commercial_data))
+                        total_chars = sum(len(str(t.get('content', ''))) for t in tender_data) + len(str(rfp_txt)) + len(str(financial_data))
                         print(f"DEBUG: Total content size for analysis: {total_chars:,} characters")
                         
                         if total_chars > 500000:  # 500K chars limit
@@ -726,10 +1149,17 @@ def generate_report_tab():
                                 if len(td.get('content', '')) > 15000:
                                     td['content'] = td['content'][:15000] + "\n[Content truncated for analysis...]"
                         
-                        results = compare_and_recommend(rfp_txt, tender_data, commercial_data, get_response)
+                        print("DEBUG: About to call compare_and_recommend analysis...")
+                        print(f"DEBUG: RFP length: {len(str(rfp_txt))}")
+                        print(f"DEBUG: Financial data length: {len(str(financial_data))}")
+                        print(f"DEBUG: Tender data count: {len(tender_data)}")
+                        
+                        results = compare_and_recommend(rfp_txt, tender_data, financial_data, get_response)
                         
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")
+                        print(f"DEBUG: Results type: {type(results)}")
+                        print(f"DEBUG: Results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")
                         
                     except Exception as e:
                         analysis_time = time.time() - analysis_start_time
@@ -740,7 +1170,7 @@ def generate_report_tab():
                             st.code(traceback.format_exc())
                         return
 
-                    print("DEBUG: Starting markdown report generation...")
+                    print("DEBUG: Start§ing markdown report generation...")
                     try:
                         report_md = build_markdown(results)
                         print("DEBUG: ✅ Markdown report generated successfully")
@@ -770,18 +1200,91 @@ def generate_report_tab():
                     debug_error("Analysis failed", e)
                     st.error(error_msg)
     else:
-        st.info("Upload one RFP and at least one tender to run the analysis.")
+        # Show specific error message based on what's missing
+        missing_items = []
+        if not has_rfp:
+            missing_items.append("RFP document")
+        if not has_companies:
+            missing_items.append("at least one company")
+        elif not companies_with_financials:
+            companies_without_financials = [company['name'] for company in st.session_state.companies if not company.get('financials')]
+            if companies_without_financials:
+                missing_items.append(f"financial data for: {', '.join(companies_without_financials)}")
+        
+        if missing_items:
+            st.info(f"To run analysis, please upload: {', '.join(missing_items)}")
+        else:
+            st.info("Upload RFP document and at least one company with tender documents and financial data to run analysis.")
 
     # Always show the last generated report if available
     if st.session_state.report["md"]:
         st.success("Report ready.")
-        st.download_button(
-            "Download PDF report",
-            data=st.session_state.report["pdf"],
-            file_name="tender_analysis_report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
+        
+        # Show financial summary download if available
+        if hasattr(st.session_state, 'combined_financial_summary') and st.session_state.combined_financial_summary is not None:
+            import pandas as pd
+            import io
+            
+            try:
+                # Convert to CSV for download
+                financial_data = st.session_state.combined_financial_summary
+                print(f"DEBUG: Creating DataFrame from financial data: {financial_data}")
+                
+                # Check if financial_data is not empty
+                df = None
+                if isinstance(financial_data, pd.DataFrame) and not financial_data.empty:
+                    df = financial_data
+                elif isinstance(financial_data, list) and len(financial_data) > 0:
+                    df = pd.DataFrame(financial_data)
+                    
+                if df is not None:
+                    csv_buffer = io.StringIO()
+                    df.to_csv(csv_buffer, index=False)
+                    csv_data = csv_buffer.getvalue()
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.download_button(
+                            "Download Financial Summary (CSV)",
+                            data=csv_data,
+                            file_name="combined_financial_summary.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+                    with col2:
+                        st.download_button(
+                            "Download Analysis Report (PDF)",
+                            data=st.session_state.report["pdf"],
+                            file_name="tender_analysis_report.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                else:
+                    st.warning("Financial summary is empty - check that Excel files contain recognizable financial data")
+                    st.download_button(
+                        "Download PDF report",
+                        data=st.session_state.report["pdf"],
+                        file_name="tender_analysis_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+            except Exception as e:
+                st.error(f"Error creating financial summary download: {e}")
+                st.download_button(
+                    "Download PDF report",
+                    data=st.session_state.report["pdf"],
+                    file_name="tender_analysis_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+        else:
+            st.download_button(
+                "Download PDF report",
+                data=st.session_state.report["pdf"],
+                file_name="tender_analysis_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
         st.markdown(st.session_state.report["md"])
 
 def simple_text_search(query: str, chunks: List[str], max_results: int = 5) -> str:
@@ -795,6 +1298,42 @@ def simple_text_search(query: str, chunks: List[str], max_results: int = 5) -> s
     hits = [c for _, c in scored[:max_results]]
     return "\n\n---\n\n".join(hits)
 
+def test_financial_chunks_integration():
+    """Test function to verify financial data is included in chatbot chunks"""
+    if not hasattr(st.session_state, 'companies') or not st.session_state.companies:
+        st.warning("No companies with financial data found in session state.")
+        return False
+        
+    st.write("🔍 **Testing Financial Data Integration:**")
+    
+    # Check if any companies have financial data
+    companies_with_financials = [c for c in st.session_state.companies if c.get('financials')]
+    
+    if not companies_with_financials:
+        st.warning("No companies have financial data uploaded.")
+        return False
+        
+    st.write(f"✅ Found {len(companies_with_financials)} companies with financial data:")
+    for company in companies_with_financials:
+        st.write(f"  - {company['name']}: {company['financials']['name']}")
+    
+    # Test financial text generation
+    st.write("\n📊 **Testing Financial Text Generation:**")
+    for company in companies_with_financials[:2]:  # Test first 2 companies
+        try:
+            financial_text = generate_financial_text_summary(company)
+            if financial_text:
+                st.success(f"✅ Financial text generated for {company['name']} ({len(financial_text)} characters)")
+                with st.expander(f"Preview financial summary for {company['name']}"):
+                    st.text(financial_text[:500] + "..." if len(financial_text) > 500 else financial_text)
+            else:
+                st.error(f"❌ Failed to generate financial text for {company['name']}")
+        except Exception as e:
+            st.error(f"❌ Error generating financial text for {company['name']}: {e}")
+    
+    return True
+
+
 def chatbot_tab():
     _inject_css()
     st.title("Chatbot")
@@ -807,16 +1346,29 @@ def chatbot_tab():
     # Build KB if needed (spinner only here)
     build_kb(ud, show_ui=True)
 
+    # Add financial data integration test
+    with st.expander("🔧 Financial Data Integration Test", expanded=False):
+        test_financial_chunks_integration()
+
     kb = st.session_state.chatbot_docs
     chunks = kb["chunks"]; index = kb["index"]
     companies = kb.get("companies", [])
     
-    # Keep console debugging but remove UI display
+    # Enhanced debugging for financial data chunks
     if kb.get("by_company"):
         print("DEBUG: KB coverage by bidder (chatbot_tab)")
+        financial_chunks = 0
         for c in companies:
             count = len(kb['by_company'].get(c, []))
-            print(f"- {c}: {count} chunks")
+            # Count financial chunks
+            company_chunks = [chunks[i] for i in kb['by_company'].get(c, [])]
+            financial_count = len([ch for ch in company_chunks if "Financial Data from" in ch])
+            if financial_count > 0:
+                financial_chunks += financial_count
+                print(f"- {c}: {count} chunks ({financial_count} financial)")
+            else:
+                print(f"- {c}: {count} chunks (no financial data)")
+        print(f"DEBUG: Total financial chunks in KB: {financial_chunks}")
     else:
         print("DEBUG: No by_company data available in KB")
 

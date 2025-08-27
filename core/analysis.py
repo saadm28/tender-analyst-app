@@ -93,22 +93,27 @@ def _default_results() -> dict:
 def compare_and_recommend(
     rfp_text: str,
     tender_data: List[dict],
-    commercial_data: Union[Dict, str],
+    financial_data: Union[List[Dict], str],
     respond_fn: Callable
 ) -> dict:
     """
     Generate comparison and recommendation using LLM with raw tender content.
     - rfp_text: Raw RFP content (string)
     - tender_data: List of dicts with 'name' and 'content' (strings)
-    - commercial_data: Structured commercial data (dict) or raw text (str)
+    - financial_data: Combined financial summary data (list of dicts) or raw text (str)
     """
     try:
+        print("DEBUG: Starting compare_and_recommend function...")
+        print(f"DEBUG: Loading prompt template...")
         template = load_prompt_template("compare_recommend.md")
+        print(f"DEBUG: Template loaded, length: {len(template)}")
 
         # Trim inputs for token safety
         rfp_highlights = str(rfp_text or "")[:15000]
+        print(f"DEBUG: RFP highlights prepared, length: {len(rfp_highlights)}")
 
         tender_sections = []
+        print(f"DEBUG: Processing {len(tender_data)} tender documents...")
         for i, tender in enumerate(tender_data):
             content = tender.get("content", "")
             if not isinstance(content, str):
@@ -119,27 +124,47 @@ def compare_and_recommend(
                 + content[:20000]
                 + "\n" + "-" * 50 + "\n"
             )
+            print(f"DEBUG: Processed tender {i+1}: {tender.get('name','Unknown')[:50]}")
         tender_content_combined = "\n".join(tender_sections)
+        print(f"DEBUG: Combined tender content length: {len(tender_content_combined)}")
 
-        if isinstance(commercial_data, dict):
+        print(f"DEBUG: Processing financial data...")
+        if isinstance(financial_data, (list, dict)):
             try:
-                commercial_formatted = json.dumps(commercial_data, indent=2, default=str)
-                commercial_summary = commercial_formatted[:12000]
-            except Exception:
-                commercial_summary = "Error processing commercial data"
-        elif isinstance(commercial_data, str):
-            commercial_summary = commercial_data[:10000]
+                financial_formatted = json.dumps(financial_data, indent=2, default=str)
+                financial_summary = financial_formatted[:12000]
+                print(f"DEBUG: Financial data formatted as JSON, length: {len(financial_summary)}")
+            except Exception as e:
+                print(f"DEBUG: Error formatting financial data as JSON: {e}")
+                financial_summary = "Error processing financial data"
+        elif isinstance(financial_data, str):
+            financial_summary = financial_data[:10000]
+            print(f"DEBUG: Financial data as string, length: {len(financial_summary)}")
         else:
-            commercial_summary = ""
+            financial_summary = ""
+            print(f"DEBUG: No financial data provided")
 
+        print(f"DEBUG: Building final prompt...")
         prompt = (template
                   .replace("{{rfp_text}}", rfp_highlights)
                   .replace("{{tender_content}}", tender_content_combined)
-                  .replace("{{commercial_text}}", commercial_summary))
+                  .replace("{{commercial_text}}", financial_summary))
+        
+        prompt_length = len(prompt)
+        print(f"DEBUG: Final prompt length: {prompt_length} characters")
+        
+        # Add prompt size warning
+        if prompt_length > 100000:
+            print(f"WARNING: Large prompt size ({prompt_length} chars) may cause timeout")
 
+        print(f"DEBUG: Calling LLM API...")
         # Expect strict JSON from the model (your llm.respond uses json mode when passed)
         response = respond_fn(prompt)
+        print(f"DEBUG: LLM response received, length: {len(str(response))}")
+        
+        print(f"DEBUG: Parsing JSON response...")
         result = parse_json_response(response)
+        print(f"DEBUG: JSON parsed successfully")
 
         final = _default_results()
         if "error" not in result and isinstance(result, dict):
@@ -147,9 +172,17 @@ def compare_and_recommend(
             for k in final.keys():
                 if k in result:
                     final[k] = result[k]
+            print(f"DEBUG: Final result merged successfully")
+        else:
+            print(f"DEBUG: Error in result or result not dict: {result}")
+        
+        print(f"DEBUG: compare_and_recommend completed successfully")
         return final
 
     except Exception as e:
+        print(f"DEBUG: Error in compare_and_recommend: {e}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
         fallback = _default_results()
         fallback["executive_summary"] = f"Error in analysis: {str(e)}"
         fallback["comprehensive_risk_analysis"]["general_project_risks"] = [str(e)]
