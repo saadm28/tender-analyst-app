@@ -44,18 +44,23 @@ def compare_and_recommend(rfp_text: str, tender_data: list, financial_data: str,
                 articles = fetch_company_news(company_name, page_size=5)
                 
                 if articles:
-                    print(f"DEBUG: Analyzing {len(articles)} articles for {company_name}...")
+                    print(f"DEBUG: ✅ Found {len(articles)} articles for {company_name}")
+                    print(f"DEBUG: Article titles: {[article.get('title', 'No title')[:50] + '...' for article in articles[:3]]}")
+                    
                     risk_analysis = analyze_company_news_risks(company_name, articles, llm_function)
                     news_analysis_results[company_name] = {
                         'articles_count': len(articles),
-                        'risk_analysis': risk_analysis
+                        'risk_analysis': risk_analysis,
+                        'sample_headlines': [article.get('title', 'No title')[:80] for article in articles[:3]]
                     }
                     external_risk_data += f"\n\n**{company_name} External Risk Analysis:**\n{risk_analysis}\n"
+                    print(f"DEBUG: ✅ Risk analysis completed for {company_name}: {len(risk_analysis)} chars")
                 else:
-                    print(f"DEBUG: No adverse media found for {company_name}")
+                    print(f"DEBUG: ⚠️ No articles found for {company_name}")
                     news_analysis_results[company_name] = {
                         'articles_count': 0,
-                        'risk_analysis': f"No recent adverse media or risk-related news found for {company_name}."
+                        'risk_analysis': f"No recent adverse media or risk-related news found for {company_name}.",
+                        'sample_headlines': []
                     }
                     external_risk_data += f"\n\n**{company_name} External Risk Analysis:**\nNo recent adverse media or risk-related news found.\n"
                     
@@ -94,7 +99,20 @@ def compare_and_recommend(rfp_text: str, tender_data: list, financial_data: str,
         print("DEBUG: Calling LLM for comprehensive analysis...")
         result = llm_function(prompt)
         
+        # Add external risk analysis to the result structure
+        if isinstance(result, dict):
+            result["external_risk_analysis"] = news_analysis_results
+            print(f"DEBUG: ✅ Added external risk analysis data to result dictionary")
+        else:
+            # If result is not a dict, create a new structure
+            print(f"DEBUG: ⚠️ LLM result is not a dict (type: {type(result)}), wrapping in new structure")
+            result = {
+                "analysis": result,
+                "external_risk_analysis": news_analysis_results
+            }
+        
         print("DEBUG: ✅ Analysis completed successfully")
+        print(f"DEBUG: Final result includes external risk for {len(news_analysis_results)} companies")
         return result
         
     except Exception as e:

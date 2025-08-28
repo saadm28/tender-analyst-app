@@ -1030,12 +1030,22 @@ def generate_report_tab():
         st.error("OpenAI API key not found. Set OPENAI_API_KEY in your environment.")
         return
 
-    # NewsAPI integration notice
+    # Only show warnings for missing optional features, not success messages
     newsapi_key = get_newsapi_key()
-    if newsapi_key:
-        st.success("🔍 External Risk Analysis enabled - NewsAPI integration active")
-    else:
+    if not newsapi_key:
         st.info("💡 **Optional**: Add NEWSAPI_KEY to environment or Streamlit secrets for external risk analysis via news monitoring")
+
+    # Only show enhanced OCR warning if not available
+    try:
+        from pdf2image import convert_from_bytes
+        import cv2
+    except ImportError:
+        st.warning("⚠️ **Enhanced OCR not available** - Install pdf2image and opencv-python for better OCR results:\n\n" +
+                  "```bash\n" +
+                  "pip install pdf2image opencv-python\n" +
+                  "# macOS: brew install poppler\n" +
+                  "# Ubuntu: apt-get install poppler-utils\n" +
+                  "```")
 
     st.subheader("Upload documents")
 

@@ -314,6 +314,29 @@ def build_markdown(data: dict) -> str:
             for k in (rec.get("kpis_and_monitoring") or [])[:6]:
                 md.append(f"- {k}")
 
+    # External Risk Analysis (from NewsAPI)
+    ext_risk = data.get("external_risk_analysis", {}) or {}
+    if ext_risk:
+        md.append("\n## External Risk Analysis")
+        md.append("*Based on recent news and media monitoring*")
+        
+        for company, risk_data in ext_risk.items():
+            if isinstance(risk_data, dict):
+                articles_count = risk_data.get('articles_count', 0)
+                risk_analysis = risk_data.get('risk_analysis', '')
+                
+                md.append(f"\n### {company}")
+                md.append(f"**Articles Analyzed:** {articles_count}")
+                
+                if risk_analysis:
+                    md.append(f"\n{risk_analysis}")
+                else:
+                    md.append("\nNo recent adverse media or risk-related news found.")
+            else:
+                # Legacy format - just the analysis text
+                md.append(f"\n### {company}")
+                md.append(f"{risk_data}")
+
     return "\n".join(md)
 
 
@@ -652,6 +675,36 @@ def build_pdf_report(data: dict) -> bytes:
         if rec.get("kpis_and_monitoring"):
             story.append(Paragraph(_md_inline_to_rl("KPIs & Monitoring"), H3))
             story.append(ListFlowable([ListItem(Paragraph(_md_inline_to_rl(x), Bullet)) for x in (rec.get("kpis_and_monitoring") or [])[:6]], bulletType="bullet"))
+
+    # External Risk Analysis (from NewsAPI)
+    ext_risk = data.get("external_risk_analysis", {}) or {}
+    if ext_risk:
+        if not show_appx:  # Add page break if no appendix was shown
+            story.append(PageBreak())
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(_md_inline_to_rl("External Risk Analysis"), H2))
+        story.append(Paragraph(_md_inline_to_rl("Based on recent news and media monitoring"), Body))
+        story.append(Spacer(1, 6))
+        
+        for company, risk_data in ext_risk.items():
+            story.append(Paragraph(_md_inline_to_rl(f"{company}"), H3))
+            
+            if isinstance(risk_data, dict):
+                articles_count = risk_data.get('articles_count', 0)
+                risk_analysis = risk_data.get('risk_analysis', '')
+                
+                story.append(Paragraph(_md_inline_to_rl(f"Articles Analyzed: {articles_count}"), Body))
+                story.append(Spacer(1, 3))
+                
+                if risk_analysis:
+                    story.append(Paragraph(_md_inline_to_rl(risk_analysis), Body))
+                else:
+                    story.append(Paragraph(_md_inline_to_rl("No recent adverse media or risk-related news found."), Body))
+            else:
+                # Legacy format - just the analysis text
+                story.append(Paragraph(_md_inline_to_rl(str(risk_data)), Body))
+            
+            story.append(Spacer(1, 6))
 
     # Build
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)

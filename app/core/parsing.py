@@ -8,6 +8,21 @@ import json
 import pytesseract
 from PIL import Image
 import fitz  # PyMuPDF for PDF to image conversion
+import os
+import tempfile
+
+# Enhanced OCR imports
+try:
+    from pdf2image import convert_from_bytes
+    import cv2
+    import numpy as np
+    PDF2IMAGE_AVAILABLE = True
+    print("DEBUG: Enhanced OCR libraries available (pdf2image + cv2)")
+except ImportError as e:
+    PDF2IMAGE_AVAILABLE = False
+    print(f"DEBUG: Enhanced OCR libraries not available: {e}")
+    print("DEBUG: Install with: pip install pdf2image opencv-python")
+    print("DEBUG: Also install poppler: brew install poppler (macOS) or apt-get install poppler-utils (Linux)")
 
 
 def is_scanned_pdf(file_content: bytes, text_threshold: float = 0.03) -> bool:
@@ -65,6 +80,113 @@ def is_scanned_pdf(file_content: bytes, text_threshold: float = 0.03) -> bool:
         print(f"DEBUG: Error checking if scanned: {e}")
         # If we can't determine, assume it might need OCR
         return True
+
+
+def extract_text_with_enhanced_ocr(file_content: bytes, filename: str = "") -> str:
+    """
+    Enhanced OCR extraction using pdf2image + OpenCV + Tesseract (simplified approach based on user's working script)
+    """
+    if not PDF2IMAGE_AVAILABLE:
+        print("DEBUG: Enhanced OCR not available, falling back to basic OCR")
+        return extract_text_with_ocr(file_content, filename)
+    
+    try:
+        print("DEBUG: Starting ENHANCED OCR extraction with pdf2image approach...")
+        is_bond_interiors = 'bond' in filename.lower() if filename else False
+        
+        if is_bond_interiors:
+            print("🔍 BOND: Using ENHANCED OCR method (simplified approach)")
+        
+        # Convert PDF to images using pdf2image
+        print("DEBUG: Converting PDF to images with pdf2image...")
+        try:
+            # Use settings similar to your working script
+            pages = convert_from_bytes(
+                file_content, 
+                dpi=200,  # Good balance of quality vs speed
+                fmt='PNG'
+            )
+            print(f"DEBUG: Successfully converted PDF to {len(pages)} page images")
+            
+            if is_bond_interiors:
+                print(f"🔍 BOND: Converted to {len(pages)} page images")
+        
+        except Exception as pdf_convert_error:
+            print(f"DEBUG: PDF conversion failed: {pdf_convert_error}")
+            if is_bond_interiors:
+                print(f"🔍 BOND: PDF conversion failed: {pdf_convert_error}")
+            return extract_text_with_ocr(file_content, filename)  # Fallback
+        
+        all_text = []
+        
+        for page_num, page_image in enumerate(pages):
+            try:
+                print(f"DEBUG: Processing page {page_num + 1}/{len(pages)}...")
+                
+                # Convert PIL image to numpy array for OpenCV
+                page_array = np.array(page_image)
+                
+                # Convert RGB to BGR (OpenCV format)
+                if len(page_array.shape) == 3:
+                    page_cv = cv2.cvtColor(page_array, cv2.COLOR_RGB2BGR)
+                else:
+                    page_cv = page_array
+                
+                # Convert to grayscale
+                gray = cv2.cvtColor(page_cv, cv2.COLOR_BGR2GRAY)
+                
+                # Apply simple threshold (based on your working script)
+                _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+                
+                if is_bond_interiors:
+                    print(f"🔍 BOND: Page {page_num + 1} preprocessed")
+                
+                # Use simple Tesseract config
+                config = '--psm 6'  # Uniform block of text
+                
+                try:
+                    text = pytesseract.image_to_string(thresh, config=config)
+                    
+                    if text.strip():
+                        all_text.append(text)
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Page {page_num + 1} SUCCESS - {len(text.strip())} characters")
+                    else:
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Page {page_num + 1} - no text extracted")
+                        
+                except Exception as ocr_error:
+                    print(f"DEBUG: OCR failed on page {page_num + 1}: {ocr_error}")
+                    if is_bond_interiors:
+                        print(f"🔍 BOND: Page {page_num + 1} OCR error: {ocr_error}")
+                    continue
+                
+            except Exception as page_error:
+                print(f"DEBUG: Error processing page {page_num + 1}: {page_error}")
+                if is_bond_interiors:
+                    print(f"🔍 BOND: Page {page_num + 1} processing error: {page_error}")
+                continue
+        
+        # Combine all extracted text
+        final_text = "\n\n".join(all_text)
+        
+        print(f"DEBUG: Enhanced OCR completed - extracted {len(final_text)} characters from {len(all_text)} pages")
+        
+        if is_bond_interiors:
+            print(f"🔍 BOND: ENHANCED OCR COMPLETE - {len(final_text)} total characters")
+            if final_text.strip():
+                print(f"🔍 BOND: SUCCESS! First 200 chars: {final_text[:200]}")
+            else:
+                print(f"🔍 BOND: STILL FAILED - no text extracted")
+        
+        return final_text
+        
+    except Exception as e:
+        print(f"DEBUG: Enhanced OCR failed completely: {e}")
+        if is_bond_interiors:
+            print(f"🔍 BOND: Enhanced OCR COMPLETELY FAILED: {e}")
+        # Fallback to basic OCR
+        return extract_text_with_ocr(file_content, filename)
 
 
 def extract_text_with_ocr(file_content: bytes, filename: str = "", force_high_quality: bool = False) -> str:
@@ -315,17 +437,42 @@ def load_pdf(file_content: bytes) -> str:
                     should_use_ocr = True
                     ocr_reason = "insufficient text and cannot verify if scanned"
         
-        # Method 4: OCR extraction
+        # Method 4: OCR extraction (try enhanced OCR first, then basic)
         if should_use_ocr:
             print(f"DEBUG: Triggering OCR extraction ({ocr_reason})...")
             if is_bond_interiors:
                 print(f"🔍 BOND: Starting OCR extraction - {ocr_reason}")
+            
+            # Try enhanced OCR first (pdf2image + cv2 approach)
+            ocr_text = ""
             try:
-                ocr_text = extract_text_with_ocr(file_content, filename_hint)
+                if PDF2IMAGE_AVAILABLE:
+                    print("DEBUG: Attempting ENHANCED OCR (pdf2image + cv2)...")
+                    if is_bond_interiors:
+                        print("🔍 BOND: Trying ENHANCED OCR method")
+                    ocr_text = extract_text_with_enhanced_ocr(file_content, filename_hint)
+                else:
+                    print("DEBUG: Enhanced OCR not available, using basic OCR")
+                    if is_bond_interiors:
+                        print("🔍 BOND: Enhanced OCR not available, using basic method")
+                    ocr_text = extract_text_with_ocr(file_content, filename_hint)
+                
                 if is_bond_interiors:
                     print(f"🔍 BOND: OCR returned {len(ocr_text)} characters")
                     if ocr_text.strip():
                         print(f"🔍 BOND: OCR first 300 chars: {ocr_text[:300]}")
+                
+            except Exception as ocr_error:
+                print(f"DEBUG: Enhanced OCR failed, trying basic OCR: {ocr_error}")
+                if is_bond_interiors:
+                    print(f"🔍 BOND: Enhanced OCR failed: {ocr_error}, trying basic OCR")
+                try:
+                    ocr_text = extract_text_with_ocr(file_content, filename_hint)
+                except Exception as basic_ocr_error:
+                    print(f"DEBUG: Basic OCR also failed: {basic_ocr_error}")
+                    if is_bond_interiors:
+                        print(f"🔍 BOND: Basic OCR also failed: {basic_ocr_error}")
+                    ocr_text = ""
                 
                 if ocr_text.strip():
                     extraction_methods.append("OCR")
