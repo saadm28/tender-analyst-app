@@ -10,108 +10,383 @@ from PIL import Image
 import fitz  # PyMuPDF for PDF to image conversion
 
 
-def is_scanned_pdf(file_content: bytes, text_threshold: float = 0.1) -> bool:
+def is_scanned_pdf(file_content: bytes, text_threshold: float = 0.03) -> bool:
     """
     Determine if a PDF is likely scanned by checking text-to-page ratio.
     Returns True if the PDF appears to be scanned (has very little extractable text).
     """
     try:
+        print("DEBUG: Checking if PDF is scanned...")
         # Try to extract text normally first
         with pdfplumber.open(BytesIO(file_content)) as pdf:
             total_chars = 0
             total_pages = len(pdf.pages)
+            print(f"DEBUG: PDF has {total_pages} pages")
             
             # Sample first few pages to avoid processing large documents
-            sample_pages = min(3, total_pages)
+            sample_pages = min(10, total_pages)  # Increased sample size
+            readable_pages = 0
             
             for i in range(sample_pages):
-                page_text = pdf.pages[i].extract_text()
-                if page_text:
-                    total_chars += len(page_text.strip())
+                try:
+                    page_text = pdf.pages[i].extract_text()
+                    if page_text and page_text.strip():
+                        page_chars = len(page_text.strip())
+                        total_chars += page_chars
+                        if page_chars > 100:  # Page has substantial text
+                            readable_pages += 1
+                        print(f"DEBUG: Page {i+1}: {page_chars} characters")
+                except Exception as page_error:
+                    print(f"DEBUG: Error extracting from page {i+1}: {page_error}")
+                    continue
             
             # Calculate average characters per page
             avg_chars_per_page = total_chars / sample_pages if sample_pages > 0 else 0
+            readable_page_ratio = readable_pages / sample_pages if sample_pages > 0 else 0
             
-            # If very few characters per page, likely scanned
-            return avg_chars_per_page < (500 * text_threshold)
+            print(f"DEBUG: Average chars per page: {avg_chars_per_page}")
+            print(f"DEBUG: Readable pages ratio: {readable_page_ratio}")
             
-    except Exception:
+            # More sophisticated detection:
+            # - Very few chars per page OR
+            # - Low ratio of readable pages OR
+            # - Total text is very short relative to page count
+            threshold_chars = 800 * text_threshold  # 24 chars default
+            is_scanned = (
+                avg_chars_per_page < threshold_chars or 
+                readable_page_ratio < 0.3 or 
+                (total_chars < 200 and total_pages > 2)
+            )
+            
+            print(f"DEBUG: Is scanned PDF: {is_scanned} (threshold: {threshold_chars} chars/page)")
+            return is_scanned
+            
+    except Exception as e:
+        print(f"DEBUG: Error checking if scanned: {e}")
         # If we can't determine, assume it might need OCR
         return True
 
 
-def extract_text_with_ocr(file_content: bytes) -> str:
+def extract_text_with_ocr(file_content: bytes, filename: str = "", force_high_quality: bool = False) -> str:
     """
-    Extract text from a PDF using OCR (for scanned documents).
+    Robust OCR extraction with multiple strategies and image preprocessing.
     """
     try:
+        print("DEBUG: Starting robust OCR extraction...")
+        if force_high_quality:
+            print("DEBUG: 🔥 FORCE HIGH QUALITY MODE ENABLED")
+        
+        # Special handling for Bond Interiors
+        is_bond_interiors = 'bond' in filename.lower() if filename else False
+        if is_bond_interiors:
+            print(f"🔍 BOND: OCR processing with enhanced debugging")
+        
+        # Test Tesseract availability first
+        try:
+            import pytesseract
+            print(f"DEBUG: Tesseract available at: {pytesseract.pytesseract.tesseract_cmd}")
+            if is_bond_interiors:
+                print(f"🔍 BOND: Tesseract path: {pytesseract.pytesseract.tesseract_cmd}")
+            pytesseract.get_tesseract_version()
+            print("DEBUG: Tesseract version check passed")
+            if is_bond_interiors:
+                print(f"🔍 BOND: Tesseract version check passed")
+        except Exception as tess_error:
+            print(f"ERROR: Tesseract not working: {str(tess_error)}")
+            if is_bond_interiors:
+                print(f"🔍 BOND: Tesseract ERROR: {tess_error}")
+            raise Exception(f"Tesseract not available: {str(tess_error)}")
+        
         text = ""
         
         # Open PDF with PyMuPDF
         pdf_document = fitz.open(stream=file_content, filetype="pdf")
+        total_pages = len(pdf_document)
+        print(f"DEBUG: OCR processing {total_pages} pages...")
         
-        for page_num in range(len(pdf_document)):
-            # Convert page to image
-            page = pdf_document[page_num]
-            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better OCR accuracy
-            pix = page.get_pixmap(matrix=mat)
-            
-            # Convert to PIL Image
-            img_data = pix.tobytes("png")
-            image = Image.open(BytesIO(img_data))
-            
-            # Perform OCR
-            page_text = pytesseract.image_to_string(image, config='--psm 6')
-            if page_text.strip():
-                text += page_text + "\n"
+        # Limit pages for performance (process max 20 pages)
+        max_pages = min(20, total_pages)
+        if total_pages > max_pages:
+            print(f"DEBUG: Large document detected, processing first {max_pages} pages only")
+        
+        successful_pages = 0
+        
+        for page_num in range(max_pages):
+            try:
+                print(f"DEBUG: Processing page {page_num + 1}/{max_pages}")
+                page = pdf_document[page_num]
+                page_text = ""
+                
+                # Try multiple strategies for this page
+                strategies = [
+                    {"zoom": 3.0, "preprocess": True},
+                    {"zoom": 2.5, "preprocess": True},
+                    {"zoom": 2.0, "preprocess": False},
+                    {"zoom": 1.5, "preprocess": False},
+                ]
+                
+                for strategy in strategies:
+                    try:
+                        zoom = strategy["zoom"]
+                        use_preprocess = strategy["preprocess"]
+                        
+                        # Convert page to image
+                        mat = fitz.Matrix(zoom, zoom)
+                        pix = page.get_pixmap(matrix=mat)
+                        
+                        # Convert to PIL Image
+                        img_data = pix.tobytes("png")
+                        image = Image.open(BytesIO(img_data))
+                        
+                        # Image preprocessing if enabled
+                        if use_preprocess:
+                            # Convert to grayscale for better OCR
+                            image = image.convert('L')
+                            
+                            # Enhance contrast and sharpness
+                            from PIL import ImageEnhance, ImageOps
+                            
+                            # Auto-contrast
+                            image = ImageOps.autocontrast(image)
+                            
+                            # Increase contrast slightly
+                            enhancer = ImageEnhance.Contrast(image)
+                            image = enhancer.enhance(1.2)
+                            
+                            # Increase sharpness
+                            enhancer = ImageEnhance.Sharpness(image)
+                            image = enhancer.enhance(1.1)
+                            
+                            print(f"DEBUG: Preprocessed image for page {page_num + 1}, zoom: {zoom}x")
+                        else:
+                            print(f"DEBUG: Raw image for page {page_num + 1}, zoom: {zoom}x, size: {image.size}")
+                        
+                        # Try different OCR configurations
+                        ocr_configs = [
+                            '--psm 1 --oem 3 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}"\'-+*/=%&@#$<>| ',
+                            '--psm 3 --oem 3',
+                            '--psm 6 --oem 3', 
+                            '--psm 4 --oem 3',
+                            '--psm 1 --oem 1',
+                            '--psm 3 --oem 1'
+                        ]
+                        
+                        for config in ocr_configs:
+                            try:
+                                extracted = pytesseract.image_to_string(image, config=config)
+                                if extracted.strip() and len(extracted.strip()) > 30:  # Minimum viable text
+                                    page_text = extracted
+                                    print(f"DEBUG: OCR success with zoom {zoom}x, config '{config[:15]}...' - {len(page_text)} chars")
+                                    break
+                            except Exception as config_error:
+                                print(f"DEBUG: OCR config failed: {config_error}")
+                                continue
+                        
+                        if page_text.strip():
+                            break  # Success with this strategy
+                            
+                    except Exception as strategy_error:
+                        print(f"DEBUG: Strategy failed (zoom {strategy['zoom']}): {strategy_error}")
+                        continue
+                
+                if page_text.strip():
+                    text += page_text + "\n"
+                    successful_pages += 1
+                    print(f"DEBUG: ✅ Page {page_num + 1} extracted {len(page_text)} characters")
+                else:
+                    print(f"DEBUG: ❌ Page {page_num + 1} - no text extracted with any strategy")
+                    
+            except Exception as page_error:
+                print(f"DEBUG: Error processing page {page_num + 1}: {str(page_error)}")
+                continue
         
         pdf_document.close()
+        print(f"DEBUG: OCR completed - {successful_pages}/{max_pages} pages successful, total extracted {len(text)} characters")
+        
+        if not text.strip():
+            raise Exception("No text could be extracted via OCR from any pages. PDF may be corrupted or contain no readable content.")
+            
         return text.strip()
         
     except Exception as e:
+        print(f"DEBUG: OCR extraction failed: {str(e)}")
         raise Exception(f"OCR extraction failed: {str(e)}")
 
 
 def load_pdf(file_content: bytes) -> str:
-    """Load PDF content using pdfplumber with pypdf fallback and OCR for scanned documents."""
+    """Load PDF content using multiple extraction methods with robust OCR fallback."""
     text = ""
+    extraction_methods = []
     
     try:
-        # Try pdfplumber first
-        with pdfplumber.open(BytesIO(file_content)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+        print("DEBUG: Starting comprehensive PDF text extraction...")
+        print(f"DEBUG: PDF file size: {len(file_content)} bytes")
         
-        # If no text extracted, try pypdf as fallback
+        # Check if this is Bond Interiors for enhanced debugging
+        filename_hint = ""
+        if hasattr(file_content, 'name'):
+            filename_hint = str(file_content.name)
+        is_bond_interiors = 'bond' in filename_hint.lower() if filename_hint else False
+        
+        if is_bond_interiors:
+            print(f"🔍 BOND INTERIORS DETECTED: Enhanced debugging enabled")
+        
+        # Method 1: Try pdfplumber first
+        try:
+            print("DEBUG: Attempting pdfplumber extraction...")
+            with pdfplumber.open(BytesIO(file_content)) as pdf:
+                print(f"DEBUG: PDF has {len(pdf.pages)} pages")
+                if is_bond_interiors:
+                    print(f"🔍 BOND: PDF has {len(pdf.pages)} pages")
+                
+                pdfplumber_text = ""
+                for page_num, page in enumerate(pdf.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            pdfplumber_text += page_text + "\n"
+                            if is_bond_interiors:
+                                print(f"🔍 BOND: Page {page_num + 1} extracted {len(page_text)} chars")
+                    except Exception as page_error:
+                        print(f"DEBUG: PDFPlumber page {page_num + 1} error: {page_error}")
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Page {page_num + 1} error: {page_error}")
+                        continue
+                
+                if pdfplumber_text.strip():
+                    text = pdfplumber_text
+                    extraction_methods.append("pdfplumber")
+                    print(f"DEBUG: PDFPlumber extracted {len(text)} characters")
+                    if is_bond_interiors:
+                        print(f"🔍 BOND: PDFPlumber SUCCESS - {len(text)} characters")
+                        print(f"🔍 BOND: First 300 chars: {text[:300]}")
+                else:
+                    if is_bond_interiors:
+                        print(f"🔍 BOND: PDFPlumber returned no text")
+        except Exception as pdfplumber_error:
+            print(f"DEBUG: PDFPlumber failed: {pdfplumber_error}")
+            if is_bond_interiors:
+                print(f"🔍 BOND: PDFPlumber ERROR: {pdfplumber_error}")
+        
+        # Method 2: Try pypdf as fallback
         if not text.strip():
-            pdf_reader = pypdf.PdfReader(BytesIO(file_content))
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+            try:
+                print("DEBUG: Attempting PyPDF extraction...")
+                pdf_reader = pypdf.PdfReader(BytesIO(file_content))
+                pypdf_text = ""
+                for page_num, page in enumerate(pdf_reader.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            pypdf_text += page_text + "\n"
+                    except Exception as page_error:
+                        print(f"DEBUG: PyPDF page {page_num} error: {page_error}")
+                        continue
+                
+                if pypdf_text.strip():
+                    text = pypdf_text
+                    extraction_methods.append("pypdf")
+                    print(f"DEBUG: PyPDF extracted {len(text)} characters")
+            except Exception as pypdf_error:
+                print(f"DEBUG: PyPDF failed: {pypdf_error}")
         
-        # If still no text or very little text, check if it's a scanned PDF
-        if not text.strip() or is_scanned_pdf(file_content):
-            # Try OCR extraction
-            ocr_text = extract_text_with_ocr(file_content)
-            if ocr_text.strip():
-                text = ocr_text
+        # Method 3: Check if we should use OCR
+        should_use_ocr = False
+        ocr_reason = ""
+        
+        if not text.strip():
+            should_use_ocr = True
+            ocr_reason = "no text extracted by standard methods"
+            print(f"DEBUG: {ocr_reason}, will use OCR")
+        else:
+            # Check if it's a scanned PDF even with some text
+            try:
+                is_scanned = is_scanned_pdf(file_content)
+                if is_scanned:
+                    should_use_ocr = True
+                    ocr_reason = "PDF appears to be scanned"
+                    print(f"DEBUG: {ocr_reason}, will use OCR")
+                else:
+                    print("DEBUG: PDF appears to have sufficient text, skipping OCR")
+            except Exception as scan_check_error:
+                print(f"DEBUG: Could not check if scanned: {scan_check_error}")
+                # If we can't check, and we have little text, try OCR anyway
+                if len(text.strip()) < 500:
+                    should_use_ocr = True
+                    ocr_reason = "insufficient text and cannot verify if scanned"
+        
+        # Method 4: OCR extraction
+        if should_use_ocr:
+            print(f"DEBUG: Triggering OCR extraction ({ocr_reason})...")
+            if is_bond_interiors:
+                print(f"🔍 BOND: Starting OCR extraction - {ocr_reason}")
+            try:
+                ocr_text = extract_text_with_ocr(file_content, filename_hint)
+                if is_bond_interiors:
+                    print(f"🔍 BOND: OCR returned {len(ocr_text)} characters")
+                    if ocr_text.strip():
+                        print(f"🔍 BOND: OCR first 300 chars: {ocr_text[:300]}")
+                
+                if ocr_text.strip():
+                    extraction_methods.append("OCR")
+                    # If OCR found significantly more text, use OCR result
+                    if len(ocr_text) > len(text) * 2:  # OCR found 2x more content
+                        print(f"DEBUG: OCR found significantly more content ({len(ocr_text)} vs {len(text)} chars), using OCR result")
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Using OCR as primary result")
+                        text = ocr_text
+                    elif not text.strip():  # No previous text
+                        print(f"DEBUG: Using OCR result as primary text ({len(ocr_text)} chars)")
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Using OCR as only result")
+                        text = ocr_text
+                    else:
+                        print(f"DEBUG: Combining standard extraction with OCR ({len(text)} + {len(ocr_text)} chars)")
+                        if is_bond_interiors:
+                            print(f"🔍 BOND: Combining text + OCR")
+                        text = text + "\n\n--- OCR EXTRACTED CONTENT ---\n\n" + ocr_text
+                else:
+                    print("DEBUG: OCR extraction returned no text")
+                    if is_bond_interiors:
+                        print(f"🔍 BOND: OCR FAILED - no text returned")
+                    if not text.strip():
+                        raise Exception("OCR extraction failed and no text available from standard methods")
+            except Exception as ocr_error:
+                print(f"ERROR: OCR failed: {str(ocr_error)}")
+                if not text.strip():
+                    raise Exception(f"All extraction methods failed. OCR error: {str(ocr_error)}")
     
     except Exception as e:
-        # If OCR also fails, try one more time with basic extraction
-        try:
-            pdf_reader = pypdf.PdfReader(BytesIO(file_content))
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        except:
-            pass
+        print(f"DEBUG: PDF extraction error: {str(e)}")
+        # Final desperate fallback attempt
+        if not text.strip():
+            try:
+                print("DEBUG: Attempting final fallback extraction...")
+                pdf_reader = pypdf.PdfReader(BytesIO(file_content))
+                for page in pdf_reader.pages:
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                    except:
+                        continue
+                if text.strip():
+                    extraction_methods.append("final_fallback")
+            except Exception as fallback_error:
+                print(f"DEBUG: Final fallback also failed: {str(fallback_error)}")
         
         if not text.strip():
-            raise Exception(f"Error reading PDF: {str(e)}")
+            raise Exception(f"Could not extract any readable content from PDF using any method (tried: pdfplumber, pypdf, OCR). Original error: {str(e)}")
+    
+    final_length = len(text.strip())
+    print(f"DEBUG: Final extracted text length: {final_length} characters")
+    print(f"DEBUG: Successful extraction methods: {', '.join(extraction_methods) if extraction_methods else 'none'}")
+    
+    if final_length == 0:
+        raise Exception("PDF appears to be empty or contains no extractable text")
+    
+    if final_length < 50:
+        print(f"WARNING: Very little text extracted ({final_length} chars) - PDF may have issues")
     
     return text.strip()
 
