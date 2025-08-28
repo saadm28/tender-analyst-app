@@ -66,6 +66,7 @@ try:
     from io import BytesIO
     from datetime import datetime
     import pandas as pd
+    import requests
     print("DEBUG: ✅ All imports completed successfully!")
 
 except Exception as e:
@@ -229,6 +230,115 @@ def uploads_key(uploaded_docs: dict) -> str:
 def _prefix(src: str, name: str, text: str) -> str:
     return f"[{src}: {name}]\n{text}".strip()
 
+# ===== NEWS API FUNCTIONS FOR EXTERNAL RISK ANALYSIS =====
+
+def get_newsapi_key():
+    """Get NewsAPI key from environment or Streamlit secrets"""
+    try:
+        # Try environment variable first
+        api_key = os.getenv("NEWSAPI_KEY")
+        if api_key:
+            return api_key
+        
+        # Try Streamlit secrets
+        if hasattr(st, 'secrets') and "NEWSAPI_KEY" in st.secrets:
+            return st.secrets["NEWSAPI_KEY"]
+        
+        return None
+    except Exception as e:
+        print(f"DEBUG: Error getting NewsAPI key: {e}")
+        return None
+
+def fetch_company_news(company_name: str, page_size: int = 5):
+    """Fetch adverse media and risk-related news for a company using NewsAPI"""
+    try:
+        api_key = get_newsapi_key()
+        if not api_key:
+            print("DEBUG: No NewsAPI key found")
+            return []
+        
+        # Query looks for company name + risk keywords
+        risk_keywords = "sanction OR fraud OR bribery OR corruption OR lawsuit OR investigation OR probe OR fined OR penalty OR violation OR breach OR misconduct"
+        query = f'"{company_name}" AND ({risk_keywords})'
+        
+        print(f"DEBUG: Searching news for: {company_name}")
+        
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": query,
+            "language": "en",
+            "pageSize": page_size,
+            "sortBy": "relevancy",
+            "apiKey": api_key,
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("status") != "ok":
+            print(f"DEBUG: NewsAPI error: {data}")
+            return []
+        
+        articles = data.get("articles", [])
+        print(f"DEBUG: Found {len(articles)} news articles for {company_name}")
+        return articles
+        
+    except Exception as e:
+        print(f"DEBUG: Error fetching news for {company_name}: {e}")
+        return []
+
+def analyze_company_news_risks(company_name: str, articles, llm_function) -> str:
+    """Use LLM to analyze news articles and generate risk assessment"""
+    if not articles:
+        return f"No recent adverse media or risk-related news found for {company_name}."
+    
+    # Prepare news content for LLM analysis
+    news_content = f"Recent news articles about {company_name}:\n\n"
+    
+    for i, article in enumerate(articles, 1):
+        title = article.get("title", "No title")
+        description = article.get("description", "No description")
+        source = article.get("source", {}).get("name", "Unknown source")
+        published_at = article.get("publishedAt", "Unknown date")
+        url = article.get("url", "")
+        
+        news_content += f"Article {i}:\n"
+        news_content += f"Title: {title}\n"
+        news_content += f"Source: {source}\n"
+        news_content += f"Date: {published_at}\n"
+        news_content += f"Description: {description}\n"
+        if url:
+            news_content += f"URL: {url}\n"
+        news_content += "\n---\n\n"
+    
+    # Risk analysis prompt
+    prompt = f"""
+Analyze the following recent news articles about {company_name} and provide a comprehensive external risk assessment for tender evaluation purposes.
+
+{news_content}
+
+Please provide a structured risk analysis covering:
+
+1. **Risk Level Assessment**: Rate as Low/Medium/High based on the news content
+2. **Key Risk Factors**: Identify specific risks mentioned in the articles
+3. **Potential Impact**: How these risks could affect project delivery, reputation, or business operations
+4. **Regulatory Concerns**: Any regulatory, legal, or compliance issues mentioned
+5. **Recommendation**: Whether these external factors should influence the tender decision
+
+Focus on objective analysis of factual information. If articles are not substantially negative or risk-related, indicate that no significant external risks were identified.
+
+Structure your response clearly with headings and bullet points for easy reading.
+"""
+
+    try:
+        print(f"DEBUG: Analyzing news risks for {company_name} with {len(articles)} articles")
+        risk_analysis = llm_function(prompt)
+        return risk_analysis
+    except Exception as e:
+        print(f"DEBUG: Error analyzing news risks for {company_name}: {e}")
+        return f"Error analyzing external risk factors for {company_name}: {str(e)}"
+
 def generate_combined_financial_summary(companies_with_financials):
     """
     Extract MAIN SUMMARY tables from each company's financial Excel file
@@ -302,8 +412,13 @@ def generate_combined_financial_summary(companies_with_financials):
                                 section_id_col = col_idx
                             elif 'section description' in cell_str:
                                 section_desc_col = col_idx  
-                            elif 'amount' in cell_str and 'aed' in cell_str:
-                                amount_col = col_idx
+                            elif ('amount in aed' in cell_str or 'amount' in cell_str) and col_idx >= 2:
+                                # Check if this is the column for this specific company
+                                if company_name.lower() in cell_str:
+                                    amount_col = col_idx
+                                    print(f"DEBUG: Found {company_name} amount column at index {col_idx}: {cell_str[:50]}...")
+                                elif amount_col == 2:  # Default first amount column
+                                    amount_col = col_idx
                             elif 'cost' in cell_str and ('sq' in cell_str or 'm' in cell_str):
                                 cost_per_sqm_col = col_idx
                 
@@ -529,12 +644,19 @@ def generate_financial_text_summary(company):
             for col_idx, cell_value in enumerate(row):
                 if pd.notna(cell_value):
                     cell_str = str(cell_value).lower().strip()
-                    if 'section no' in cell_str or 'section id' in cell_str:
-                        section_id_col = col_idx
-                    elif 'section description' in cell_str or 'description' in cell_str:
-                        section_desc_col = col_idx  
-                    elif 'amount' in cell_str and 'aed' in cell_str:
-                        amount_col = col_idx
+                    if 'section no' in cell_str or 'section description' in cell_str:
+                        if 'section no' in cell_str:
+                            section_id_col = col_idx
+                        elif 'section description' in cell_str:
+                            section_desc_col = col_idx
+                    elif ('amount in aed' in cell_str or 'amount' in cell_str) and col_idx >= 2:
+                        # This is likely a company amount column
+                        if amount_col == 2:  # First amount column found
+                            amount_col = col_idx
+                        # Extract company name from header for better matching
+                        if company_name.lower() in cell_str:
+                            amount_col = col_idx
+                            print(f"DEBUG: Found {company_name} amount column at index {col_idx}: {cell_str[:50]}...")
                     elif 'cost' in cell_str and ('sq' in cell_str or 'm' in cell_str):
                         cost_per_sqm_col = col_idx
         
@@ -907,6 +1029,13 @@ def generate_report_tab():
     if not os.getenv("OPENAI_API_KEY"):
         st.error("OpenAI API key not found. Set OPENAI_API_KEY in your environment.")
         return
+
+    # NewsAPI integration notice
+    newsapi_key = get_newsapi_key()
+    if newsapi_key:
+        st.success("🔍 External Risk Analysis enabled - NewsAPI integration active")
+    else:
+        st.info("💡 **Optional**: Add NEWSAPI_KEY to environment or Streamlit secrets for external risk analysis via news monitoring")
 
     st.subheader("Upload documents")
 
