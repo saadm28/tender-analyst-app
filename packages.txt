@@ -1,2 +1,5 @@
 tesseract-ocr
 tesseract-ocr-eng
+poppler-utils        # needed by pdf2image (pdftoppm/pdftocairo)
+libgl1               # OpenCV runtime dep
+libglib2.0-0         # OpenCV runtime dep

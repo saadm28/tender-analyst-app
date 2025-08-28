@@ -15,7 +15,9 @@ Pillow>=10.0.0
 
 # Enhanced OCR (optional but recommended)
 pdf2image>=1.17.0
-opencv-python>=4.8.0
+# opencv-python>=4.8.0
+opencv-python-headless>=4.8.0
+
 
 # Data processing
 pandas>=2.1.0
