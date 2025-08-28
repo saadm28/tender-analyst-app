@@ -5,31 +5,113 @@ import pypdf
 from docx import Document
 from io import BytesIO
 import json
+import logging
+
+# Optional enhanced OCR stack
+try:
+    from pdf2image import convert_from_bytes
+    import cv2
+    import numpy as np
+    import pytesseract
+    _ENHANCED_OCR_AVAILABLE = True
+except Exception as _e:
+    logging.debug(f"Enhanced OCR deps not available: {_e}")
+    _ENHANCED_OCR_AVAILABLE = False
 
 
-def load_pdf(file_content: bytes) -> str:
-    """Load PDF content using pdfplumber with pypdf fallback."""
-    text = ""
-    
+def _is_scanned_pdf(file_content: bytes, text_threshold: float = 0.02) -> bool:
+    """Heuristic: if text per page is very low, treat as scanned (needs OCR)."""
     try:
-        # Try pdfplumber first
+        with pdfplumber.open(BytesIO(file_content)) as pdf:
+            total_chars = 0
+            pages = len(pdf.pages)
+            sample = min(pages, 8)
+            for i in range(sample):
+                try:
+                    t = pdf.pages[i].extract_text() or ""
+                    total_chars += len(t.strip())
+                except Exception:
+                    continue
+            # chars per page threshold
+            return (sample > 0) and (total_chars / sample < (text_threshold * 1000))
+    except Exception:
+        # If pdfplumber fails, assume scanned to be safe
+        return True
+
+
+def _extract_text_with_enhanced_ocr(file_content: bytes, filename: str = "") -> str:
+    """Simplified, robust OCR using pdf2image + OpenCV + Tesseract (user-proven flow)."""
+    if not _ENHANCED_OCR_AVAILABLE:
+        return ""
+    try:
+        pages = convert_from_bytes(file_content, dpi=200, fmt="PNG")
+    except Exception as e:
+        logging.debug(f"pdf2image conversion failed: {e}")
+        return ""
+
+    texts = []
+    for i, pil_img in enumerate(pages):
+        try:
+            arr = np.array(pil_img)
+            if arr.ndim == 3:
+                bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+            else:
+                bgr = arr
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            # OTSU + binary (close to the sample script)
+            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Stick to a simple PSM that works well for blocks of text
+            txt = pytesseract.image_to_string(thresh, config="--psm 6")
+            if txt and txt.strip():
+                texts.append(txt)
+        except Exception as e:
+            logging.debug(f"OCR failed on page {i+1}: {e}")
+            continue
+
+    return "\n\n".join(texts).strip()
+
+
+def load_pdf(file_content: bytes, filename: str = "") -> str:
+    """Load PDF content with text extractors, then fall back to OCR when needed."""
+    text = ""
+    try:
+        # 1) Try native text extraction
         with pdfplumber.open(BytesIO(file_content)) as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        
-        # If no text extracted, try pypdf as fallback
+                try:
+                    t = page.extract_text()
+                    if t:
+                        text += t + "\n"
+                except Exception:
+                    continue
+
         if not text.strip():
-            pdf_reader = pypdf.PdfReader(BytesIO(file_content))
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-    
+            try:
+                rdr = pypdf.PdfReader(BytesIO(file_content))
+                for p in rdr.pages:
+                    try:
+                        t = p.extract_text()
+                        if t:
+                            text += t + "\n"
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # 2) If still empty or likely scanned => OCR
+        if (not text.strip()) or _is_scanned_pdf(file_content):
+            logging.debug("PDF appears scanned or empty; using enhanced OCR")
+            ocr_text = _extract_text_with_enhanced_ocr(file_content, filename)
+            if ocr_text.strip():
+                return ocr_text
     except Exception as e:
+        # As a last resort, try OCR directly
+        logging.debug(f"Native PDF extraction failed ({e}); trying OCR")
+        ocr_text = _extract_text_with_enhanced_ocr(file_content, filename)
+        if ocr_text.strip():
+            return ocr_text
         raise Exception(f"Error reading PDF: {str(e)}")
-    
+
     return text.strip()
 
 
@@ -443,11 +525,11 @@ def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200, min_chars: 
 
 
 def load_document(file_content: bytes, filename: str) -> str:
-    """Load document content based on file type."""
+    """Load document content based on file type with OCR support for PDFs."""
     filename_lower = filename.lower()
-    
+
     if filename_lower.endswith('.pdf'):
-        return load_pdf(file_content)
+        return load_pdf(file_content, filename)
     elif filename_lower.endswith('.docx'):
         return load_docx(file_content)
     elif filename_lower.endswith(('.xlsx', '.xls', '.csv')):

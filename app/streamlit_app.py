@@ -250,43 +250,136 @@ def get_newsapi_key():
         return None
 
 def fetch_company_news(company_name: str, page_size: int = 5):
-    """Fetch adverse media and risk-related news for a company using NewsAPI"""
+    """Fetch adverse media and risk-related news for a company using NewsAPI with debug metadata and fallback strategy.
+
+    Returns a dict: { 'articles': list, 'meta': { ...debug info... } }
+    """
+    from datetime import datetime, timedelta
+    import re
+    meta = {
+        "company": company_name,
+        "strategy": None,
+        "status": None,
+        "error": None,
+        "params": None,
+        "counts": {"risk": 0, "broad": 0, "used": 0},
+    }
     try:
         api_key = get_newsapi_key()
         if not api_key:
             print("DEBUG: No NewsAPI key found")
-            return []
-        
-        # Query looks for company name + risk keywords
-        risk_keywords = "sanction OR fraud OR bribery OR corruption OR lawsuit OR investigation OR probe OR fined OR penalty OR violation OR breach OR misconduct"
-        query = f'"{company_name}" AND ({risk_keywords})'
-        
-        print(f"DEBUG: Searching news for: {company_name}")
-        
+            meta["error"] = "missing_api_key"
+            return {"articles": [], "meta": meta}
+
+        # Build time window (NewsAPI free typically allows last ~30 days)
+        to_dt = datetime.utcnow()
+        frm_dt = to_dt - timedelta(days=28)  # conservative to avoid 426
+
+        # Risk-focused query first
+        risk_keywords = (
+            "sanction OR fraud OR bribery OR corruption OR lawsuit OR investigation OR probe OR "
+            "fined OR penalty OR violation OR breach OR misconduct OR money laundering OR scandal"
+        )
+        # Add a few common legal suffix variants
+        variants = [company_name, f"{company_name} LLC", f"{company_name} Limited", f"{company_name} Ltd"]
+        company_expr = " OR ".join([f'"{v}"' for v in variants])
+        query_risk = f"({company_expr}) AND ({risk_keywords})"
+
         url = "https://newsapi.org/v2/everything"
-        params = {
-            "q": query,
+
+        def _try_request(params: dict, label: str):
+            """Execute request; if 426 parameterInvalid due to 'from' too old, clamp and retry once."""
+            resp = requests.get(url, params=params, timeout=30)
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {}
+
+            status_chain = [resp.status_code]
+            final_params = dict(params)
+
+            # Handle plan date-window error
+            if (resp.status_code == 426 or payload.get("code") == "parameterInvalid") and isinstance(payload, dict):
+                msg = payload.get("message", "")
+                m = re.search(r"as far back as (\d{4}-\d{2}-\d{2})", msg)
+                if m:
+                    allowed_from = m.group(1)
+                    # Clamp 'from' to allowed_from
+                    final_params["from"] = allowed_from
+                    print(f"DEBUG: Adjusting NewsAPI 'from' to {allowed_from} for label={label}")
+                    resp2 = requests.get(url, params=final_params, timeout=30)
+                    try:
+                        payload = resp2.json()
+                    except Exception:
+                        payload = {}
+                    status_chain.append(resp2.status_code)
+            articles = payload.get("articles", []) if payload.get("status") == "ok" else []
+            return articles, status_chain, payload, final_params
+
+        params_risk = {
+            "q": query_risk,
             "language": "en",
+            "searchIn": "title,description",
+            "from": frm_dt.strftime("%Y-%m-%d"),
+            "to": to_dt.strftime("%Y-%m-%d"),
             "pageSize": page_size,
             "sortBy": "relevancy",
             "apiKey": api_key,
         }
-        
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("status") != "ok":
-            print(f"DEBUG: NewsAPI error: {data}")
-            return []
-        
-        articles = data.get("articles", [])
-        print(f"DEBUG: Found {len(articles)} news articles for {company_name}")
-        return articles
-        
+        print(f"DEBUG: NewsAPI risk query for {company_name}: {params_risk}")
+        risk_articles, risk_statuses, risk_payload, risk_final = _try_request(params_risk, "risk")
+        meta["status"] = risk_statuses[-1] if risk_statuses else None
+        meta["counts"]["risk"] = len(risk_articles)
+        meta["statuses_risk"] = risk_statuses
+
+        # Fallback: broader company-only query, then client-side filter by risk terms
+        used_articles = risk_articles
+        meta["strategy"] = "risk"
+
+        if not risk_articles:
+            query_broad = f'"{company_name}"'
+            params_broad = {
+                "q": query_broad,
+                "language": "en",
+                "searchIn": "title,description",
+                "from": frm_dt.strftime("%Y-%m-%d"),
+                "to": to_dt.strftime("%Y-%m-%d"),
+                "pageSize": max(page_size, 10),
+                "sortBy": "relevancy",
+                "apiKey": api_key,
+            }
+            print(f"DEBUG: NewsAPI broad query for {company_name}: {params_broad}")
+            broad_articles, broad_statuses, broad_payload, broad_final = _try_request(params_broad, "broad")
+            meta["counts"]["broad"] = len(broad_articles)
+            meta["statuses_broad"] = broad_statuses
+
+            # Client-side filter with risk terms in title/description
+            rk = [k.strip().lower() for k in risk_keywords.replace("OR", "|").split("|") if k.strip()]
+            def is_risky(a):
+                text = (a.get("title","") + " " + a.get("description",""))
+                tl = text.lower()
+                return any(k in tl for k in rk)
+            filtered = [a for a in broad_articles if is_risky(a)]
+            used_articles = filtered
+            meta["strategy"] = "fallback_broad+filter"
+            # Update final status/error from broad attempt if we used it
+            meta["status"] = (broad_statuses[-1] if broad_statuses else meta.get("status"))
+            if not meta.get("error") and (not broad_articles):
+                # surface payload error info when available
+                if isinstance(broad_payload, dict) and broad_payload.get("status") == "error":
+                    meta["error"] = broad_payload
+
+        meta["params"] = {"risk": risk_final if 'risk_final' in locals() else params_risk,
+                           "broad": broad_final if 'broad_final' in locals() else None,
+                           "used_strategy": meta["strategy"]}
+        meta["counts"]["used"] = len(used_articles)
+        print(f"DEBUG: NewsAPI result for {company_name} — strategy: {meta['strategy']}, used: {len(used_articles)}")
+        return {"articles": used_articles, "meta": meta}
+
     except Exception as e:
         print(f"DEBUG: Error fetching news for {company_name}: {e}")
-        return []
+        meta["error"] = str(e)
+        return {"articles": [], "meta": meta}
 
 def analyze_company_news_risks(company_name: str, articles, llm_function) -> str:
     """Use LLM to analyze news articles and generate risk assessment"""
@@ -545,7 +638,7 @@ def generate_combined_financial_summary(companies_with_financials):
                             amount = company_data[match_desc.upper()]
                             break
                     
-                    row_data[f'{company_name}\n(Amount in AED)'] = f"{amount:,.2f}" if amount > 0 else ""
+                    row_data[f'{company_name}\n(AED)'] = f"{amount:,.2f}" if amount > 0 else ""
                 
                 template_data.append(row_data)
             
@@ -557,7 +650,7 @@ def generate_combined_financial_summary(companies_with_financials):
             
             for company_name in companies_data.keys():
                 total = companies_data[company_name].get('SUBTOTAL', 0)
-                subtotal_row[f'{company_name}\n(Amount in AED)'] = f"{total:,.2f}" if total > 0 else ""
+                subtotal_row[f'{company_name}\n(AED)'] = f"{total:,.2f}" if total > 0 else ""
             
             template_data.append(subtotal_row)
             
@@ -1227,7 +1320,7 @@ def generate_report_tab():
                     st.write(f"  Financial Data: Not uploaded")
                 
                 # Remove entire company button
-                if st.button(f"🗑️ Remove {company['name']}", key=f"remove_company_{company_idx}", help=f"Remove entire company"):
+                if st.button(f"Remove {company['name']}", key=f"remove_company_{company_idx}", help=f"Remove entire company"):
                     st.session_state.companies.pop(company_idx)
                     st.rerun()
                 
@@ -1236,52 +1329,7 @@ def generate_report_tab():
                 if 'financial_file' in company:
                     st.write(f"  • **Financials:** {company['financial_file']['name']}")
             
-            # Show combined financial summary download
-            if combined_financial_csv is not None:
-                try:
-                    import pandas as pd
-                    import io
-                    
-                    # Check if we have valid data
-                    has_data = False
-                    csv_data = ""  # Initialize csv_data
-                    
-                    if isinstance(combined_financial_csv, pd.DataFrame) and not combined_financial_csv.empty:
-                        has_data = True
-                    elif isinstance(combined_financial_csv, list) and len(combined_financial_csv) > 0:
-                        has_data = True
-                    
-                    if has_data:
-                        # Convert list of dicts to DataFrame then to CSV
-                        if isinstance(combined_financial_csv, pd.DataFrame):
-                            df = combined_financial_csv
-                        else:
-                            df = pd.DataFrame(combined_financial_csv)
-                        csv_buffer = io.StringIO()
-                        
-                        # Ensure proper column formatting for better readability
-                        if 'Section Description' in df.columns:
-                            # Make sure column names are properly formatted
-                            df.columns = [col.strip() for col in df.columns]
-                        
-                        # Format CSV with proper column widths and formatting
-                        df.to_csv(csv_buffer, index=False, float_format='%.2f', 
-                                 encoding='utf-8', quoting=1)  # quoting=1 quotes all fields
-                        csv_data = csv_buffer.getvalue()
-                        
-                        # Only show download button when we have data
-                        st.download_button(
-                            label="Download Combined Financial Summary (CSV)",
-                            data=csv_data,
-                            file_name="bauhaus_commercial_analysis.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    else:
-                        st.info("No financial data available for download.")
-                except Exception as e:
-                    print(f"ERROR: Failed to create CSV download: {e}")
-                    st.error(f"Error preparing financial summary download: {str(e)}")
+            # Removed combined financial summary CSV download from Upload Summary for cleaner UI
         else:
             st.write("**Tender Responses:** No companies added")
 
@@ -1345,7 +1393,13 @@ def generate_report_tab():
                                 print(f"DEBUG: Truncating tender {t['name']} from {len(tender_content)} to 100K chars")
                                 tender_content = tender_content[:100000] + "\n[Content truncated for processing...]"
                             
-                            tenders_parsed.append({"name": t["name"], "content": tender_content})
+                            # Preserve company so we can correctly link financials to readable tenders
+                            tender_company = t.get("company") or extract_company_name(t["name"]) or ""
+                            tenders_parsed.append({
+                                "name": t["name"],
+                                "company": tender_company,
+                                "content": tender_content
+                            })
                         except Exception as e:
                             print(f"DEBUG: ❌ Tender {i+1} loading failed: {e}")
                             print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
@@ -1377,8 +1431,8 @@ def generate_report_tab():
                                 company_name = company['name']
                                 # Check if this company appears in our valid tender_data
                                 has_readable_docs = any(
-                                    t.get('company', '').lower() == company_name.lower() or 
-                                    company_name.lower() in t.get('name', '').lower()
+                                    (t.get('company') and t['company'].lower() == company_name.lower()) or 
+                                    (company_name.lower() in t.get('name', '').lower())
                                     for t in tenders_parsed 
                                     if t.get('content', '').strip()  # Must have actual content
                                 )
@@ -1415,7 +1469,7 @@ def generate_report_tab():
                                 }
                                 
                                 # Extract company names from column headers
-                                company_columns = [col for col in financial_dataframe.columns if 'Amount in AED' in col]
+                                company_columns = [col for col in financial_dataframe.columns if '(AED)' in col]
                                 company_names = [col.split('\n')[0] for col in company_columns]
                                 
                                 # Add each section's data
@@ -1553,6 +1607,42 @@ def generate_report_tab():
                         print(f"DEBUG: Tender data count: {len(tender_data)}")
                         
                         results = compare_and_recommend(rfp_txt, tender_data, financial_data, get_response)
+
+                        # If NewsAPI key is present, enrich results with external risk analysis at app layer too
+                        try:
+                            news_key = get_newsapi_key()
+                            if news_key:
+                                companies_for_news = []
+                                for t in tender_data:
+                                    cname = t.get('company') or extract_company_name(t.get('name',''))
+                                    if cname and cname not in companies_for_news:
+                                        companies_for_news.append(cname)
+                                external_risk = {}
+                                for cname in companies_for_news:
+                                    news_res = fetch_company_news(cname, page_size=6)
+                                    articles = news_res.get('articles', []) if isinstance(news_res, dict) else (news_res or [])
+                                    meta = news_res.get('meta', {}) if isinstance(news_res, dict) else {}
+
+                                    if articles:
+                                        analysis_txt = analyze_company_news_risks(cname, articles, get_response)
+                                        external_risk[cname] = {
+                                            'articles_count': len(articles),
+                                            'risk_analysis': analysis_txt,
+                                            'sample_headlines': [a.get('title','') for a in articles[:3]],
+                                            'debug': meta
+                                        }
+                                    else:
+                                        external_risk[cname] = {
+                                            'articles_count': 0,
+                                            'risk_analysis': f'No adverse media or external red flags identified for {cname} in recent monitoring.',
+                                            'sample_headlines': [],
+                                            'debug': meta
+                                        }
+                                # Attach to results for reporting
+                                if isinstance(results, dict):
+                                    results['external_risk_analysis'] = external_risk
+                        except Exception as e:
+                            print(f"DEBUG: Error enriching results with external risk: {e}")
                         
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ✅ compare_and_recommend completed successfully in {analysis_time:.1f} seconds")
@@ -1568,7 +1658,7 @@ def generate_report_tab():
                             st.code(traceback.format_exc())
                         return
 
-                    print("DEBUG: Start§ing markdown report generation...")
+                    print("DEBUG: Starting markdown report generation...")
                     try:
                         report_md = build_markdown(results)
                         print("DEBUG: ✅ Markdown report generated successfully")
@@ -1710,7 +1800,7 @@ def test_financial_chunks_integration():
         st.warning("No companies with financial data found in session state.")
         return False
         
-    st.write("🔍 **Testing Financial Data Integration:**")
+    # Removed testing banner for production UI
     
     # Check if any companies have financial data
     companies_with_financials = [c for c in st.session_state.companies if c.get('financials')]
@@ -1730,8 +1820,6 @@ def test_financial_chunks_integration():
             financial_text = generate_financial_text_summary(company)
             if financial_text:
                 st.success(f"✅ Financial text generated for {company['name']} ({len(financial_text)} characters)")
-                with st.expander(f"Preview financial summary for {company['name']}"):
-                    st.text(financial_text[:500] + "..." if len(financial_text) > 500 else financial_text)
             else:
                 st.error(f"❌ Failed to generate financial text for {company['name']}")
         except Exception as e:
@@ -1752,9 +1840,7 @@ def chatbot_tab():
     # Build KB if needed (spinner only here)
     build_kb(ud, show_ui=True)
 
-    # Add financial data integration test
-    with st.expander("🔧 Financial Data Integration Test", expanded=False):
-        test_financial_chunks_integration()
+    # Removed financial data integration test expander for production
 
     kb = st.session_state.chatbot_docs
     chunks = kb["chunks"]; index = kb["index"]
@@ -1783,8 +1869,8 @@ def chatbot_tab():
     examples = [
         "Summarize each bidder’s approach in 5 bullets.",
         "What are the top 5 risks flagged across all bidders?",
-        "Who best meets the RFP timeline and why?",
-        "List any scope exclusions mentioned by each bidder.",
+        "Provide a company snapshot for each bidder.",
+        "Summarize the strengths and weaknesses of each bidder.",
     ]
     ecols = st.columns(len(examples))
     for i, p in enumerate(examples):
@@ -2051,7 +2137,7 @@ def main():
         st.error("Please refresh the page or contact support if the error persists.")
         
         # Show detailed error info
-        st.subheader("� Error Details")
+        st.subheader("Error Details")
         st.text(f"Error: {e}")
         st.text(f"Type: {type(e).__name__}")
         with st.expander("Full Traceback"):
