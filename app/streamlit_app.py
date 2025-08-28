@@ -1096,7 +1096,7 @@ def home_tab():
     # Feature cards — equal width & height
     st.markdown("<div class='cards-wrap'>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3, gap="medium")
-    with c1: st.markdown("<div class='card'><h4>1 · Upload</h4>RFP, tender responses with company financials (PDF/XLSX).</div>", unsafe_allow_html=True)
+    with c1: st.markdown("<div class='card'><h4>1 · Upload</h4>RFP, tender responses with company financials (PDF/DOCX/XLSX).</div>", unsafe_allow_html=True)
     with c2: st.markdown("<div class='card'><h4>2 · Analyze</h4>Structured summaries, risk flags, and a clean side-by-side comparison.</div>", unsafe_allow_html=True)
     with c3: st.markdown("<div class='card'><h4>3 · Report & Chat</h4>Export a polished PDF and ask questions in a focused Chatbot.</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
