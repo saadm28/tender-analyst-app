@@ -132,8 +132,10 @@ def compare_and_recommend(
         if isinstance(financial_data, (list, dict)):
             try:
                 financial_formatted = json.dumps(financial_data, indent=2, default=str)
-                financial_summary = financial_formatted[:12000]
+                financial_summary = financial_formatted[:15000]  # Increased limit for financial data
                 print(f"DEBUG: Financial data formatted as JSON, length: {len(financial_summary)}")
+                print(f"DEBUG: First 1000 chars of financial data:")
+                print(financial_formatted[:1000])
             except Exception as e:
                 print(f"DEBUG: Error formatting financial data as JSON: {e}")
                 financial_summary = "Error processing financial data"

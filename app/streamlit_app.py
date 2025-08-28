@@ -766,7 +766,7 @@ def generate_report_tab():
     
     # RFP Document Upload
     st.markdown("**RFP Document**")
-    rfp_file = st.file_uploader("Upload RFP Document", type=["pdf", "docx", "xlsx", "xls", "csv"],
+    rfp_file = st.file_uploader("Upload RFP Document", type=["pdf"],
                                 key="rfp_uploader", label_visibility="collapsed")
     if rfp_file:
         st.session_state.uploaded_documents["rfp"] = {"name": rfp_file.name, "content": rfp_file.getvalue()}
@@ -794,8 +794,8 @@ def generate_report_tab():
         # Tender Documents Upload
         st.markdown("**Tender Documents**")
         tender_files = st.file_uploader(
-            "Upload Tender Documents (PDF, DOCX, etc.)", 
-            type=["pdf", "docx", "xlsx", "xls", "csv"],
+            "Upload Tender Documents (PDF, DOC, DOCX)", 
+            type=["pdf", "doc", "docx"],
             accept_multiple_files=True, 
             key=f"tender_uploader_{st.session_state.form_reset_counter}",
             label_visibility="collapsed"
@@ -955,6 +955,8 @@ def generate_report_tab():
                     
                     # Check if we have valid data
                     has_data = False
+                    csv_data = ""  # Initialize csv_data
+                    
                     if isinstance(combined_financial_csv, pd.DataFrame) and not combined_financial_csv.empty:
                         has_data = True
                     elif isinstance(combined_financial_csv, list) and len(combined_financial_csv) > 0:
@@ -967,16 +969,27 @@ def generate_report_tab():
                         else:
                             df = pd.DataFrame(combined_financial_csv)
                         csv_buffer = io.StringIO()
-                        df.to_csv(csv_buffer, index=False)
+                        
+                        # Ensure proper column formatting for better readability
+                        if 'Section Description' in df.columns:
+                            # Make sure column names are properly formatted
+                            df.columns = [col.strip() for col in df.columns]
+                        
+                        # Format CSV with proper column widths and formatting
+                        df.to_csv(csv_buffer, index=False, float_format='%.2f', 
+                                 encoding='utf-8', quoting=1)  # quoting=1 quotes all fields
                         csv_data = csv_buffer.getvalue()
-                    
-                    st.download_button(
-                        label="Download Combined Financial Summary (CSV)",
-                        data=csv_data,
-                        file_name="combined_financial_summary.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                        
+                        # Only show download button when we have data
+                        st.download_button(
+                            label="Download Combined Financial Summary (CSV)",
+                            data=csv_data,
+                            file_name="bauhaus_commercial_analysis.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    else:
+                        st.info("No financial data available for download.")
                 except Exception as e:
                     print(f"ERROR: Failed to create CSV download: {e}")
                     st.error(f"Error preparing financial summary download: {str(e)}")
@@ -1065,12 +1078,61 @@ def generate_report_tab():
                             print(f"DEBUG: Found {len(companies_with_financials)} companies with financial files")
                             
                             # Generate combined financial summary
-                            financial_data = generate_combined_financial_summary(companies_with_financials)
-                            print(f"DEBUG: ✅ Combined financial summary generated - type: {type(financial_data)}")
+                            financial_dataframe = generate_combined_financial_summary(companies_with_financials)
+                            print(f"DEBUG: ✅ Combined financial summary generated - type: {type(financial_dataframe)}")
                             
-                            # Store for download
-                            if financial_data is not None and ((isinstance(financial_data, pd.DataFrame) and not financial_data.empty) or (isinstance(financial_data, list) and len(financial_data) > 0)):
-                                st.session_state.combined_financial_summary = financial_data
+                            # Convert DataFrame to structured JSON for LLM analysis
+                            if isinstance(financial_dataframe, pd.DataFrame) and not financial_dataframe.empty:
+                                # Store DataFrame for CSV download
+                                st.session_state.combined_financial_summary = financial_dataframe
+                                
+                                # Convert to structured JSON for analysis
+                                financial_data = {
+                                    "financial_summary": {
+                                        "title": "Combined Financial Summary by Company and Section",
+                                        "currency": "AED",
+                                        "data_format": "section_by_company_breakdown",
+                                        "sections": []
+                                    }
+                                }
+                                
+                                # Extract company names from column headers
+                                company_columns = [col for col in financial_dataframe.columns if 'Amount in AED' in col]
+                                company_names = [col.split('\n')[0] for col in company_columns]
+                                
+                                # Add each section's data
+                                for _, row in financial_dataframe.iterrows():
+                                    section_data = {
+                                        "section_id": row.get('Section No.', ''),
+                                        "section_description": row.get('Section Description', ''),
+                                        "company_amounts": {}
+                                    }
+                                    
+                                    # Add each company's amount for this section
+                                    for company_col, company_name in zip(company_columns, company_names):
+                                        amount_str = row.get(company_col, '')
+                                        if amount_str and amount_str.strip():
+                                            try:
+                                                # Convert formatted amount back to number for precise analysis
+                                                amount_clean = amount_str.replace(',', '').replace('AED', '').strip()
+                                                amount_value = float(amount_clean)
+                                                section_data["company_amounts"][company_name] = {
+                                                    "amount_aed": amount_value,
+                                                    "formatted": amount_str
+                                                }
+                                            except ValueError:
+                                                # If conversion fails, store as text
+                                                section_data["company_amounts"][company_name] = {
+                                                    "amount_aed": 0,
+                                                    "formatted": amount_str
+                                                }
+                                    
+                                    financial_data["financial_summary"]["sections"].append(section_data)
+                                
+                                print(f"DEBUG: Converted financial data to structured JSON with {len(financial_data['financial_summary']['sections'])} sections")
+                            else:
+                                financial_data = ""
+                                print("DEBUG: No valid financial data generated")
                         else:
                             financial_data = ""  # Empty string when no financial data
                             print("DEBUG: No financial files provided")
@@ -1239,7 +1301,15 @@ def generate_report_tab():
                     
                 if df is not None:
                     csv_buffer = io.StringIO()
-                    df.to_csv(csv_buffer, index=False)
+                    
+                    # Ensure proper column formatting for better readability
+                    if 'Section Description' in df.columns:
+                        # Make sure column names are properly formatted
+                        df.columns = [col.strip() for col in df.columns]
+                    
+                    # Format CSV with proper column widths and formatting  
+                    df.to_csv(csv_buffer, index=False, float_format='%.2f',
+                             encoding='utf-8', quoting=1)  # quoting=1 quotes all fields
                     csv_data = csv_buffer.getvalue()
                     
                     col1, col2 = st.columns(2)
@@ -1247,7 +1317,7 @@ def generate_report_tab():
                         st.download_button(
                             "Download Financial Summary (CSV)",
                             data=csv_data,
-                            file_name="combined_financial_summary.csv",
+                            file_name="bauhaus_commercial_analysis.csv",
                             mime="text/csv",
                             use_container_width=True,
                         )
