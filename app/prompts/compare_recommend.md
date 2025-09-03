@@ -33,21 +33,55 @@ Prefer up to 5 items in any list (strengths, concerns, risks, conditions, KPIs, 
 
 DATA SOURCES
 
+⚠️ **IMPORTANT**: Only the companies listed in the Tender Response Content below have been validated and should be analyzed.
+
 RFP Requirements & Context:
 {{rfp_text}}
 
-Tender Response Content (full content per bidder):
+Tender Response Content (ONLY companies with readable documents):
 {{tender_content}}
 
-Financial Analysis Data (structured JSON or text):
+Financial Analysis Data (ONLY for companies with readable documents):
 {{commercial_text}}
 
-If financial data is structured JSON (e.g., with sheets[*].financial_summary / sections per bidder), extract bidder subtotals, cost per sqm, and notable section outliers. Calculate differences and % variances between bidders when possible. If only text is available, use the clearest numbers you can find.
+External Risk Analysis Data (based on recent news and media monitoring will be appended below)
+
+**CRITICAL DATA INTEGRITY RULES - STRICTLY ENFORCE:**
+
+⚠️ **ABSOLUTE REQUIREMENT**: Only analyze companies that have actual document content available in the knowledge base.
+
+1. **MANDATORY PRE-ANALYSIS CHECK**: Before writing ANY content about a company, verify that company has readable document chunks in the Tender Response Content section
+2. **ZERO TOLERANCE FOR HALLUCINATION**: If a company has no document content or 0 chunks, DO NOT include it anywhere in the analysis
+3. **NO SPECULATION ALLOWED**: NEVER estimate, assume, guess, or invent ANY information for companies with missing/unreadable documents
+4. **EXCLUDE COMPLETELY**: Companies without readable documents must be completely excluded from all sections (bidder snapshot, technical analysis, team analysis, financial comparison, recommendations)
+5. **DOCUMENT-FIRST RULE**: Every statement about a company MUST be backed by explicit content from their uploaded documents
+6. **NO PLACEHOLDER DATA**: Do not create entries with empty fields for companies without data - exclude them entirely
+
+**VERIFICATION PROCESS FOR EACH COMPANY:**
+
+- Step 1: Check if company has document chunks in Tender Response Content
+- Step 2: If NO chunks exist, immediately exclude from analysis
+- Step 3: If chunks exist, proceed with analysis using only available data
+- Step 4: For missing financial data, use empty strings but include company if documents exist
+
+**EXAMPLE**: If "Bond Interiors" has 0 document chunks but "BW Interiors" has 207 chunks, only analyze BW Interiors. Do not mention Bond Interiors anywhere in the report.
+
+**STRICT FINANCIAL DATA RULES:**
+
+1. **ONLY use financial figures that are explicitly provided in the Financial Analysis Data above**
+2. **NEVER estimate, assume, or calculate financial values not present in the source data**
+3. **If a company's total cost is not in the provided data, use empty string "" for total_cost field**
+4. **For cost breakdowns, only reference sections/amounts that exist in the source data**
+5. **All financial amounts must come directly from the provided data - NO EXCEPTIONS**
+
+If financial data is structured JSON (e.g., with financial_summary.sections), use the exact amounts provided. Calculate differences and % variances between bidders ONLY when both values are present in the source data. Never make up numbers that don't exist in the source data.
 
 JSON SCHEMA (return exactly this structure)
 
+⚠️ **CRITICAL**: Only include companies in the arrays below that have readable document content. If a company has 0 chunks/no documents, completely exclude it from ALL arrays and sections.
+
 {
-"executive_summary": "Comprehensive 400-word executive summary covering: project context, evaluation methodology, key findings across all criteria, strategic implications, financial impact assessment, risk overview, and a clear recommendation with business rationale.",
+"executive_summary": "Comprehensive 400-word executive summary covering: project context, evaluation methodology, key findings across all criteria, strategic implications, financial impact assessment, risk overview, and a clear recommendation with business rationale. ONLY mention companies that have readable document content.",
 "comparison_snapshot": [
 { "bidder": "Bidder name", "technical_fit": "2-3 sentences describing technical approach, innovation, and project fit (≤180 chars)", "team": "2-3 sentences on team quality, PM credentials, and capacity (≤160 chars)" }
 ],
@@ -133,6 +167,23 @@ JSON SCHEMA (return exactly this structure)
 }
 ]
 },
+"external_risk_analysis": {
+"methodology": "News and media analysis approach for external risk assessment",
+"table_summary": "2-3 sentence explanation of external risk evaluation using recent news, adverse media screening, and reputational risk factors",
+"assessments": [
+{
+"bidder": "Bidder name",
+"news_risk_level": "Low/Medium/High based on recent adverse media",
+"key_risk_factors": ["≤5 specific external risks identified"],
+"regulatory_concerns": "Legal, compliance, or regulatory issues (concise)",
+"reputational_impact": "Assessment of reputation and market standing (concise)",
+"potential_project_impact": "How external factors could affect project delivery (concise)",
+"mitigation_recommendations": ["≤3 actions to address external risks"],
+"external_risk_score": "x/10 – based on news analysis and external factors"
+}
+],
+"overall_external_risk_summary": "Summary of external risk landscape affecting the tender decision"
+},
 "comprehensive_risk_analysis": {
 "risk_assessment_methodology": "Approach to risk evaluation",
 "by_bidder": {
@@ -180,9 +231,13 @@ ANALYSIS REQUIREMENTS
 
 Financial data handling:
 
+**STRICT RULE: Only use financial figures that are explicitly present in the provided Financial Analysis Data. Never estimate, assume, or create financial values.**
+
 - If commercial_text is structured JSON with financial_summary and sections per bidder, use exact subtotals, cost per sqm, and section amounts. Compute differences and % deltas between bidders (e.g., "Belhasa subtotal vs Hennessey: AED Δ and %").
-- Call out cost outliers by section (e.g., Mechanical, Joinery, MEP).
+- Call out cost outliers by section (e.g., Mechanical, Joinery, MEP) ONLY if this data exists in the provided financial data.
 - If only text is available, extract best-effort totals and clearly state uncertainty.
+- **If financial data is missing or unclear for any bidder, state "Financial data not available" rather than making up figures.**
+- **For total_cost field: Use exact amounts from the data or leave as empty string "" if not available.**
 
 - Provide justification for all 1–10 scores (short, defensible reasons).
 - Address UAE-specific regulatory, HSE, and approvals (DMCC/DM/DCD) considerations.
