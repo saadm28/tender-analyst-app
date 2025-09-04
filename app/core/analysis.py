@@ -7,7 +7,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from core.llm import respond
 
 
-def compare_and_recommend(rfp_text: str, tender_data: list, financial_data: str, llm_function):
+def compare_and_recommend(rfp_text: str, tender_data: list, financial_data: str, llm_function, guidelines_text: str = ""):
     """
     Compare tender responses and generate comprehensive recommendation with external risk analysis
     """
@@ -84,16 +84,46 @@ def compare_and_recommend(rfp_text: str, tender_data: list, financial_data: str,
             company_name = tender.get('company', tender.get('name', 'Unknown Company'))
             tender_content += f"\n\n**{company_name}:**\n{tender['content']}\n"
         
-        # Prepare the complete prompt with external risk data
+        # Add guidelines if provided
+        if guidelines_text.strip():
+            guidelines_section = guidelines_text
+            print(f"DEBUG: ✅ Adding {len(guidelines_text)} characters of evaluation guidelines")
+            print(f"DEBUG: Guidelines preview: {guidelines_text[:200]}...")
+        else:
+            guidelines_section = "No custom evaluation guidelines provided. Use standard procurement evaluation criteria."
+            print("DEBUG: ❌ No evaluation guidelines provided (empty or None)")
+            
+        print(f"DEBUG: Guidelines section length: {len(guidelines_section)} characters")
+        
+        # Prepare the complete prompt with all replacements
         prompt = prompt_template.replace("{{rfp_text}}", rfp_text)
         prompt = prompt.replace("{{tender_content}}", tender_content)
         prompt = prompt.replace("{{commercial_text}}", str(financial_data))
+        prompt = prompt.replace("{{guidelines}}", guidelines_section)
+        
+        print(f"DEBUG: Prompt length after all replacements: {len(prompt)} characters")
         
         # Add external risk analysis data to the prompt
         prompt += f"\n\nExternal Risk Analysis Data (based on recent news and media):\n{external_risk_data}\n"
         
         print(f"DEBUG: Prompt prepared - Total length: {len(prompt)} characters")
         print(f"DEBUG: External risk data included for {len(news_analysis_results)} companies")
+        
+        # Verify guidelines are in the prompt
+        if guidelines_text.strip():
+            guidelines_in_prompt = "Custom Evaluation Guidelines:" in prompt
+            print(f"DEBUG: Guidelines verification - In prompt: {guidelines_in_prompt}")
+            if guidelines_in_prompt:
+                guidelines_start = prompt.find("Custom Evaluation Guidelines:")
+                guidelines_end = prompt.find("\n\nIf financial data is structured", guidelines_start)
+                if guidelines_end == -1:
+                    guidelines_end = guidelines_start + 500  # Show first 500 chars if section not found
+                guidelines_section_in_prompt = prompt[guidelines_start:guidelines_end]
+                print(f"DEBUG: Guidelines section in prompt: {guidelines_section_in_prompt[:400]}...")
+            else:
+                print(f"DEBUG: ❌ WARNING: Guidelines text provided but not found in final prompt!")
+        else:
+            print(f"DEBUG: Using default guidelines message in prompt")
         
         # Generate the analysis
         print("DEBUG: Calling LLM for comprehensive analysis...")

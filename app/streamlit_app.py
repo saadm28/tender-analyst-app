@@ -23,32 +23,22 @@ def show_error(error_msg, traceback_str):
 
 try:
     # Step 1: Basic imports
-    print("DEBUG: Starting imports...")
     from pathlib import Path
     
     # Step 2: Setup paths
-    print("DEBUG: Setting up paths...")
     repo_root = os.path.dirname(os.path.dirname(__file__))  # Go up from app/ to repository root
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     
-    print(f"DEBUG: Repository root: {repo_root}")
-    print(f"DEBUG: Core directory exists: {os.path.exists(os.path.join(repo_root, 'core'))}")
-    print(f"DEBUG: Current working directory: {os.getcwd()}")
-    print(f"DEBUG: Python path: {sys.path[:3]}")
-    
     # Step 3: Core module imports
-    print("DEBUG: Importing core modules...")
     from core import llm, parsing, rag, analysis, reporting
     from core.llm import respond, embed_texts
     from core.parsing import load_document, chunk_text
     from core.rag import build_faiss, retrieve
     from core.analysis import compare_and_recommend
     from core.reporting import build_markdown, build_pdf_report
-    print("DEBUG: ✅ All core modules imported successfully!")
     
     # Step 4: Other imports
-    print("DEBUG: Importing other modules...")
     import warnings
     try:
         from cryptography.utils import CryptographyDeprecationWarning
@@ -60,14 +50,13 @@ try:
     import hashlib
     import contextlib
     import time
-    from typing import Tuple, List
+    from typing import Tuple, List, Any, Dict
     import zipfile
     import base64
     from io import BytesIO
     from datetime import datetime
     import pandas as pd
     import requests
-    print("DEBUG: ✅ All imports completed successfully!")
 
 except Exception as e:
     error_traceback = traceback.format_exc()
@@ -128,7 +117,8 @@ def debug_print(message, show_in_ui=None):
     if show_in_ui is None:
         show_in_ui = DEBUG
     
-    if show_in_ui:
+    # Only show in UI if explicitly requested (not by default)
+    if show_in_ui and show_in_ui is not False:
         st.text(f"🐛 {message}")
 
 def debug_info(title, data, show_in_ui=None):
@@ -143,6 +133,7 @@ def debug_info(title, data, show_in_ui=None):
 
 def debug_error(message, error, show_in_ui=None):
     """Print debug error with traceback"""
+    import traceback
     debug_print(f"ERROR: {message}", show_in_ui)
     debug_print(f"Error details: {error}", show_in_ui)
     debug_print(f"Error type: {type(error).__name__}", show_in_ui)
@@ -169,17 +160,18 @@ BRAND_LOGO_PATH = "app/assets/bauhaus_logo.png"   # <-- save your new combined l
 # ----------------------- Session bootstrap ------------------------
 def init_session_state():
     try:
-        debug_print("Initializing session state...")
+        debug_print("Initializing session state...", show_in_ui=False)
         ss = st.session_state
         ss.setdefault("active_tab", "Home")
-        ss.setdefault("uploaded_documents", {"rfp": None, "tenders": []})
+        ss.setdefault("uploaded_documents", {"rfp": None, "tenders": [], "guidelines": None})
         ss.setdefault("chatbot_docs", {"chunks": [], "index": None, "companies": [], "kb_key": None})
         ss.setdefault("chat_history", [])
         ss.setdefault("queued_question", None)
         ss.setdefault("report", {"md": None, "pdf": None, "results": None})
-        debug_print("Session state initialized successfully")
+        debug_print("Session state initialized successfully", show_in_ui=False)
     except Exception as e:
         # Fallback initialization if session state fails
+        import traceback
         error_msg = f"Session state initialization error: {e}"
         print(f"CRITICAL: {error_msg}")
         print(f"Traceback:\n{traceback.format_exc()}")
@@ -213,6 +205,7 @@ def uploads_key(uploaded_docs: dict) -> str:
                 h.update(it["name"].encode("utf-8"))
                 h.update(it["content"])
     upd(uploaded_docs.get("rfp"))
+    upd(uploaded_docs.get("guidelines"))  # Include guidelines in cache key
     upd(uploaded_docs.get("tenders", []))
     
     # Include financial data in the cache key
@@ -673,7 +666,8 @@ def generate_combined_financial_summary(companies_with_financials):
 
 def generate_financial_text_summary(company):
     """
-    Generate a readable text summary of a company's financial data for chatbot chunks.
+    Generate a simple readable text summary of a company's financial data for chatbot chunks.
+    Simplified approach - just extract basic structure and totals.
     """
     try:
         import pandas as pd
@@ -683,155 +677,274 @@ def generate_financial_text_summary(company):
         financial_file = company.get('financials')
         
         if not financial_file:
+            print(f"DEBUG: No financial file for {company_name}")
             return None
             
-        print(f"DEBUG: Generating financial text summary for {company_name}")
+        print(f"DEBUG: Generating SIMPLIFIED financial text summary for {company_name}")
         print(f"DEBUG: Financial file: {financial_file['name']}")
         
         # Read the Excel file
         financial_bytes = io.BytesIO(financial_file['content'])
         
-        # Try to find MAIN SUMMARY sheet
         try:
-            excel_file = pd.ExcelFile(financial_bytes)
-            print(f"DEBUG: Excel sheets available: {excel_file.sheet_names}")
-            main_summary_sheet = None
+            # Try to read all sheets to get an overview
+            excel_data = pd.read_excel(financial_bytes, sheet_name=None, header=None)
+            print(f"DEBUG: Excel sheets available: {list(excel_data.keys())}")
             
-            # Look for MAIN SUMMARY sheet
-            for sheet_name in excel_file.sheet_names:
-                if 'main' in sheet_name.lower() and 'summary' in sheet_name.lower():
-                    main_summary_sheet = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
-                    print(f"DEBUG: Found MAIN SUMMARY sheet: {sheet_name}")
+            # Find the best sheet to use (prefer summary, otherwise first sheet)
+            target_sheet = None
+            target_sheet_name = ""
+            
+            for sheet_name, sheet_data in excel_data.items():
+                if 'summary' in sheet_name.lower() or 'main' in sheet_name.lower():
+                    target_sheet = sheet_data
+                    target_sheet_name = sheet_name
+                    print(f"DEBUG: Using summary sheet: {sheet_name}")
                     break
             
-            if main_summary_sheet is None:
-                print(f"DEBUG: No MAIN SUMMARY sheet found for {company_name}, trying first sheet")
-                # Try first sheet as fallback
-                first_sheet = excel_file.sheet_names[0]
-                main_summary_sheet = pd.read_excel(excel_file, sheet_name=first_sheet, header=None)
-                print(f"DEBUG: Using first sheet '{first_sheet}' as fallback")
-                
-            if main_summary_sheet is None or main_summary_sheet.empty:
-                print(f"DEBUG: No valid data found in Excel file for {company_name}")
-                return None
-                
-            print(f"DEBUG: Excel data shape: {main_summary_sheet.shape}")
+            if target_sheet is None:
+                # Use first sheet
+                target_sheet_name = list(excel_data.keys())[0]
+                target_sheet = excel_data[target_sheet_name]
+                print(f"DEBUG: Using first sheet: {target_sheet_name}")
+            
+            if target_sheet is None or target_sheet.empty:
+                print(f"WARNING: No valid data found in Excel file for {company_name}")
+                return f"Financial Data for {company_name}\nSource: {financial_file['name']}\nNote: No readable data found in Excel file."
+            
+            print(f"DEBUG: Processing sheet with shape: {target_sheet.shape}")
+            
+            # Create a simple text summary
+            financial_lines = [
+                f"Financial Summary for {company_name}",
+                f"Source: {financial_file['name']}",
+                f"Sheet: {target_sheet_name}",
+                ""
+            ]
+            
+            # Extract basic structure and numbers
+            total_amounts = []
+            sections_found = []
+            
+            for index, row in target_sheet.iterrows():
+                try:
+                    if index > 50:  # Don't process too many rows
+                        break
+                        
+                    row_text = ""
+                    amounts_in_row = []
+                    
+                    for col_idx, cell_value in enumerate(row):
+                        if pd.notna(cell_value):
+                            cell_str = str(cell_value).strip()
+                            
+                            # Look for section descriptions
+                            if len(cell_str) > 3 and len(cell_str) < 100:
+                                if any(keyword in cell_str.lower() for keyword in ['section', 'work', 'general', 'floor', 'wall', 'ceiling', 'door', 'mechanical', 'electrical', 'plumbing', 'fire']):
+                                    sections_found.append(cell_str)
+                                    row_text += cell_str + " | "
+                            
+                            # Look for amounts
+                            try:
+                                if isinstance(cell_value, (int, float)) and cell_value > 1000:
+                                    amounts_in_row.append(cell_value)
+                                    total_amounts.append(cell_value)
+                                elif isinstance(cell_value, str) and any(char.isdigit() for char in cell_value):
+                                    # Try to extract number from string
+                                    cleaned = cell_value.replace(',', '').replace('AED', '').replace('aed', '').strip()
+                                    try:
+                                        amount = float(cleaned)
+                                        if amount > 1000:
+                                            amounts_in_row.append(amount)
+                                            total_amounts.append(amount)
+                                    except:
+                                        pass
+                            except:
+                                pass
+                    
+                    # Add row to summary if it has meaningful content
+                    if row_text and amounts_in_row:
+                        formatted_amounts = [f"AED {amt:,.2f}" for amt in amounts_in_row]
+                        financial_lines.append(f"{row_text.rstrip(' | ')} - {', '.join(formatted_amounts)}")
+                        
+                except Exception as row_error:
+                    continue  # Skip problematic rows
+            
+            # Add summary statistics
+            financial_lines.append("")
+            if sections_found:
+                financial_lines.append(f"Sections Identified: {len(set(sections_found))}")
+                financial_lines.append("Key Sections: " + ", ".join(list(set(sections_found))[:10]))
+            
+            if total_amounts:
+                total_sum = sum(total_amounts)
+                max_amount = max(total_amounts)
+                financial_lines.append(f"Total Amount Range: AED {min(total_amounts):,.2f} - AED {max_amount:,.2f}")
+                financial_lines.append(f"Estimated Project Total: AED {total_sum:,.2f}")
+                financial_lines.append(f"Number of Cost Items: {len(total_amounts)}")
+            else:
+                financial_lines.append("Note: No clear financial amounts identified in the file")
+            
+            result = "\n".join(financial_lines)
+            print(f"DEBUG: ✅ SIMPLIFIED financial summary created for {company_name}: {len(result)} chars")
+            print(f"DEBUG: Financial summary preview: {result[:200]}...")
+            return result
             
         except Exception as excel_error:
             print(f"ERROR: Failed to read Excel file for {company_name}: {excel_error}")
-            return None
+            # Return basic info even if parsing fails
+            return f"Financial Data for {company_name}\nSource: {financial_file['name']}\nNote: Could not parse Excel data - {str(excel_error)[:100]}"
             
-        # FIXED: Handle vertical layout (each company has own Excel file)
-        # Instead of looking for company name in columns, extract the data directly
-        print(f"DEBUG: Processing vertical layout Excel for {company_name}")
-        
-        # Find column indices for section data (vertical layout approach)
-        section_id_col = 0
-        section_desc_col = 1  
-        amount_col = 2
-        cost_per_sqm_col = 3
-        
-        # Look for headers to confirm column positions
-        for index in range(min(5, len(main_summary_sheet))):
-            row = main_summary_sheet.iloc[index]
-            for col_idx, cell_value in enumerate(row):
-                if pd.notna(cell_value):
-                    cell_str = str(cell_value).lower().strip()
-                    if 'section no' in cell_str or 'section description' in cell_str:
-                        if 'section no' in cell_str:
-                            section_id_col = col_idx
-                        elif 'section description' in cell_str:
-                            section_desc_col = col_idx
-                    elif ('amount in aed' in cell_str or 'amount' in cell_str) and col_idx >= 2:
-                        # This is likely a company amount column
-                        if amount_col == 2:  # First amount column found
-                            amount_col = col_idx
-                        # Extract company name from header for better matching
-                        if company_name.lower() in cell_str:
-                            amount_col = col_idx
-                            print(f"DEBUG: Found {company_name} amount column at index {col_idx}: {cell_str[:50]}...")
-                    elif 'cost' in cell_str and ('sq' in cell_str or 'm' in cell_str):
-                        cost_per_sqm_col = col_idx
-        
-        print(f"DEBUG: Using vertical layout columns - ID: {section_id_col}, Desc: {section_desc_col}, Amount: {amount_col}, Cost/sqm: {cost_per_sqm_col}")
-        
-        # Create financial text summary
-        financial_text_lines = [
-            f"Financial Summary for {company_name}:",
-            f"Source: {financial_file['name']}",
-            ""
-        ]
-        
-        total_amount = 0
-        section_count = 0
-        
-        # Extract sections and amounts from vertical layout
-        for index, row in main_summary_sheet.iterrows():
-            try:
-                if index < 3:  # Skip header rows
-                    continue
-                    
-                # Get section identifier and description
-                section_id = ""
-                if len(row) > section_id_col and pd.notna(row.iloc[section_id_col]):
-                    section_id = str(row.iloc[section_id_col]).strip()
-                
-                section_desc = ""
-                if len(row) > section_desc_col and pd.notna(row.iloc[section_desc_col]):
-                    section_desc = str(row.iloc[section_desc_col]).strip()
-                
-                # Skip if not a valid section
-                if not section_id or not section_desc or section_desc in ['nan', 'None']:
-                    continue
-                    
-                # Skip if section ID is too long (likely not a real section)
-                if len(section_id) > 3:
-                    continue
-                    
-                # Get amount value
-                amount_val = None
-                if len(row) > amount_col and pd.notna(row.iloc[amount_col]):
-                    try:
-                        raw_val = row.iloc[amount_col]
-                        if isinstance(raw_val, (int, float)):
-                            amount_val = float(raw_val)
-                        elif isinstance(raw_val, str):
-                            # Clean string and convert
-                            cleaned_val = raw_val.replace(',', '').replace('AED', '').strip()
-                            amount_val = float(cleaned_val)
-                        
-                        if amount_val and amount_val > 0:
-                            # Round to 2 decimal places for consistent formatting
-                            amount_val = round(amount_val, 2)
-                            total_amount += amount_val
-                    except (ValueError, TypeError):
-                        pass  # Skip invalid amounts
-                
-                # Add section to summary if we have valid data
-                if section_id and section_desc:
-                    if amount_val:
-                        financial_text_lines.append(f"Section {section_id}: {section_desc} - AED {amount_val:,.2f}")
-                    else:
-                        financial_text_lines.append(f"Section {section_id}: {section_desc}")
-                    section_count += 1
-                    
-            except Exception as row_error:
-                print(f"DEBUG: Error processing row {index}: {row_error}")
-                continue
-        
-        # Add total summary
-        if total_amount > 0:
-            financial_text_lines.append("")
-            financial_text_lines.append(f"Total Project Cost: AED {total_amount:,.2f}")
-        
-        financial_text_lines.append(f"Total Sections: {section_count}")
-        
-        print(f"DEBUG: ✅ Financial summary created for {company_name}: {section_count} sections, AED {total_amount:,.2f}")
-        return "\n".join(financial_text_lines)
-        
     except Exception as e:
         print(f"ERROR: Failed to generate financial text summary for {company_name}: {e}")
-        return None
+        # Return something rather than None
+        return f"Financial Data for {company_name}\nNote: Error processing financial file - {str(e)[:100]}"
+
+
+def create_financial_csv_summary_for_chatbot(companies):
+    """
+    Create a comprehensive CSV-style financial summary of all bidders for the chatbot.
+    This provides a simple table format that the chatbot can easily reference.
+    """
+    try:
+        print("DEBUG: Creating financial CSV summary for chatbot...")
+        
+        csv_lines = [
+            "COMPREHENSIVE FINANCIAL SUMMARY - ALL BIDDERS",
+            "=" * 60,
+            "",
+            "This is a structured financial comparison of all bidders for easy reference.",
+            "",
+            "BIDDER | FILE SOURCE | ESTIMATED TOTAL | KEY SECTIONS | STATUS",
+            "-" * 80
+        ]
+        
+        total_bidders = 0
+        bidders_with_data = 0
+        
+        for company in companies:
+            total_bidders += 1
+            company_name = company['name']
+            financial_file = company.get('financials')
+            
+            if not financial_file:
+                csv_lines.append(f"{company_name} | No Financial File | N/A | N/A | No Data")
+                continue
+            
+            try:
+                bidders_with_data += 1
+                
+                # Extract basic financial info
+                import pandas as pd
+                import io
+                
+                financial_bytes = io.BytesIO(financial_file['content'])
+                excel_data = pd.read_excel(financial_bytes, sheet_name=None, header=None)
+                
+                # Get first available sheet
+                sheet_name = list(excel_data.keys())[0]
+                sheet_data = excel_data[sheet_name]
+                
+                # Extract amounts and sections
+                total_amounts = []
+                sections = []
+                
+                for index, row in sheet_data.iterrows():
+                    if index > 30:  # Limit processing
+                        break
+                        
+                    for col_idx, cell_value in enumerate(row):
+                        if pd.notna(cell_value):
+                            cell_str = str(cell_value).strip()
+                            
+                            # Collect sections
+                            if len(cell_str) > 5 and len(cell_str) < 50:
+                                if any(keyword in cell_str.lower() for keyword in ['work', 'section', 'floor', 'wall', 'mechanical', 'electrical']):
+                                    sections.append(cell_str)
+                            
+                            # Collect amounts
+                            try:
+                                if isinstance(cell_value, (int, float)) and cell_value > 1000:
+                                    total_amounts.append(cell_value)
+                                elif isinstance(cell_value, str) and any(char.isdigit() for char in cell_value):
+                                    cleaned = cell_value.replace(',', '').replace('AED', '').strip()
+                                    try:
+                                        amount = float(cleaned)
+                                        if amount > 1000:
+                                            total_amounts.append(amount)
+                                    except:
+                                        pass
+                            except:
+                                pass
+                
+                # Format summary
+                estimated_total = f"AED {sum(total_amounts):,.0f}" if total_amounts else "Not Available"
+                key_sections = ", ".join(list(set(sections))[:3]) if sections else "Not Identified"
+                status = f"Processed ({len(total_amounts)} items)" if total_amounts else "Limited Data"
+                
+                csv_lines.append(f"{company_name} | {financial_file['name']} | {estimated_total} | {key_sections} | {status}")
+                
+            except Exception as e:
+                csv_lines.append(f"{company_name} | {financial_file['name']} | Error Processing | N/A | Processing Failed")
+                print(f"DEBUG: Error processing {company_name}: {e}")
+        
+        # Add summary statistics
+        csv_lines.extend([
+            "",
+            "-" * 80,
+            f"SUMMARY: {total_bidders} total bidders, {bidders_with_data} with financial files",
+            "",
+            "USAGE INSTRUCTIONS FOR QUERIES:",
+            "- Ask about specific bidder costs: 'What is Company X's total cost?'",
+            "- Compare bidders: 'Which bidder has the lowest cost?'", 
+            "- Ask about sections: 'Does Company Y include electrical work?'",
+            "- Financial breakdown: 'Show me the financial breakdown for all bidders'",
+            "",
+            "Note: This summary provides overview data. Detailed breakdowns are in individual financial documents."
+        ])
+        
+        result = "\n".join(csv_lines)
+        print(f"DEBUG: ✅ Financial CSV summary created: {len(result)} chars, {total_bidders} bidders")
+        return result
+        
+    except Exception as e:
+        print(f"ERROR creating financial CSV summary: {e}")
+        import traceback
+        traceback.print_exc()
+        return "Financial Summary Generation Failed - Error processing bidder financial data"
+
+
+def extract_guidelines_text(uploaded_docs: dict) -> str:
+    """
+    Extract full guidelines text for report generation prompt.
+    Returns empty string if no guidelines uploaded.
+    """
+    try:
+        print("DEBUG: Starting guidelines text extraction...")
+        
+        if not uploaded_docs.get("guidelines"):
+            print("DEBUG: No guidelines document found in uploaded_docs")
+            return ""
+            
+        guidelines_file = uploaded_docs["guidelines"]
+        print(f"DEBUG: Guidelines file found: {guidelines_file['name']}")
+        print(f"DEBUG: Guidelines file size: {len(guidelines_file['content'])} bytes")
+        
+        guidelines_text = load_document(guidelines_file["content"], guidelines_file["name"])
+        
+        if guidelines_text.strip():
+            print(f"DEBUG: ✅ Extracted {len(guidelines_text)} chars from guidelines: {guidelines_file['name']}")
+            print(f"DEBUG: Guidelines preview: {guidelines_text[:300]}...")
+            return guidelines_text.strip()
+        else:
+            print(f"DEBUG: ❌ No content extracted from guidelines file: {guidelines_file['name']}")
+            return ""
+            
+    except Exception as e:
+        print(f"ERROR: Failed to extract guidelines text: {e}")
+        import traceback
+        print(f"ERROR: Traceback: {traceback.format_exc()}")
+        return ""
 
 
 def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS_PER_FILE) -> Tuple[List[str], List[str]]:
@@ -847,6 +960,18 @@ def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS
                     all_chunks.append(_prefix("RFP Document", nm, ch))
         except Exception as e:
             st.warning(f"Could not process RFP {nm}: {str(e)}")
+
+    # Guidelines (Optional)
+    if uploaded_docs.get("guidelines"):
+        nm = uploaded_docs["guidelines"]["name"]
+        try:
+            txt = load_document(uploaded_docs["guidelines"]["content"], nm)
+            if txt.strip():
+                for ch in chunk_text(txt)[:max_per_file]:
+                    all_chunks.append(_prefix("Evaluation Guideline", nm, ch))
+                print(f"DEBUG: Added {len(chunk_text(txt)[:max_per_file])} guideline chunks from {nm}")
+        except Exception as e:
+            st.warning(f"Could not process Guidelines {nm}: {str(e)}")
 
     # Tenders - now with company-centric processing
     company_documents = {}  # Group documents by company
@@ -926,41 +1051,157 @@ def make_chunks_from_uploads(uploaded_docs: dict, max_per_file: int = MAX_CHUNKS
                     "This company will be excluded from analysis.")
             print(f"ERROR: {company_name} completely excluded - no readable files")
 
-    # Add financial data chunks if available in session state
-    if hasattr(st.session_state, 'companies') and st.session_state.companies:
-        print("DEBUG: Adding financial data chunks to knowledge base")
-        print(f"DEBUG: Found {len(st.session_state.companies)} companies in session state")
-        for company in st.session_state.companies:
-            company_name = company['name']
-            print(f"DEBUG: Processing company: {company_name}")
+    # Add financial data chunks - SIMPLIFIED using existing DataFrame
+    print("DEBUG: Adding SIMPLIFIED financial data to chatbot chunks...")
+    
+    # Ensure the combined financial summary exists (fallback to generate from session state)
+    if not hasattr(st.session_state, 'combined_financial_summary') or st.session_state.combined_financial_summary is None:
+        try:
+            if st.session_state.get('companies'):
+                print("DEBUG: No combined financial summary in session; generating now from companies...")
+                st.session_state.combined_financial_summary = generate_combined_financial_summary(st.session_state.companies)
+        except Exception as e:
+            print(f"ERROR: Failed to generate combined financial summary on-the-fly: {e}")
+
+    # Use the existing combined financial summary DataFrame instead of processing individual files
+    if hasattr(st.session_state, 'combined_financial_summary') and st.session_state.combined_financial_summary is not None:
+        try:
+            import pandas as pd
+            financial_df = st.session_state.combined_financial_summary
             
-            # CRITICAL: Only process financial data if company already has readable documents
-            if company_name not in companies:
-                print(f"DEBUG: ❌ Skipping {company_name} financial data - no readable documents found")
-                continue
-            
-            # Add financial data if available
-            if company.get('financials'):
-                print(f"DEBUG: {company_name} has financial data: {company['financials']['name']}")
+            if isinstance(financial_df, pd.DataFrame) and not financial_df.empty:
+                print(f"DEBUG: Using existing financial DataFrame with shape: {financial_df.shape}")
+                
+                # Convert DataFrame to readable text format for chatbot
+                financial_text_lines = [
+                    "COMPREHENSIVE FINANCIAL COMPARISON - ALL BIDDERS",
+                    "=" * 60,
+                    "",
+                    "This is the detailed financial breakdown comparing all bidders:",
+                    ""
+                ]
+                
+                # Add table header
+                columns = financial_df.columns.tolist()
+                financial_text_lines.append(" | ".join(columns))
+                financial_text_lines.append("-" * 80)
+                
+                # Add each row
+                for index, row in financial_df.iterrows():
+                    row_data = []
+                    for col in columns:
+                        value = row[col]
+                        if pd.notna(value):
+                            row_data.append(str(value))
+                        else:
+                            row_data.append("")
+                    financial_text_lines.append(" | ".join(row_data))
+                
+                # Add summary information
+                financial_text_lines.extend([
+                    "",
+                    "BIDDER TOTALS SUMMARY:",
+                    "-" * 30
+                ])
+                
+                # Extract totals for each bidder
+                for col in columns:
+                    if 'AED' in col or any(company in col for company in ['Bond', 'Hennessey', 'Company']):
+                        if col != 'Section No.' and col != 'Section Description':
+                            try:
+                                # Get the total row or calculate sum
+                                total_value = None
+                                for idx, row in financial_df.iterrows():
+                                    if 'TOTAL' in str(idx) or 'SUB TOTAL' in str(idx):
+                                        total_value = row[col]
+                                        break
+                                
+                                if total_value and pd.notna(total_value):
+                                    financial_text_lines.append(f"{col}: {total_value}")
+                            except:
+                                pass
+                
+                financial_text_lines.extend([
+                    "",
+                    "USAGE INSTRUCTIONS:",
+                    "- Ask 'What is Bond Interiors total cost?' or 'What is Hennessey total cost?'",
+                    "- Ask 'Compare the flooring costs between bidders'",
+                    "- Ask 'Which bidder is cheaper for mechanical works?'",
+                    "- Ask 'Show me the cost breakdown by section'",
+                    "",
+                    "All financial data is extracted from the submitted Excel files."
+                ])
+                
+                financial_summary_text = "\n".join(financial_text_lines)
+                print(f"DEBUG: Generated financial summary text: {len(financial_summary_text)} chars")
+                
+                # Create chunks from the financial summary
+                financial_chunks = chunk_text(financial_summary_text)
+                for i, chunk in enumerate(financial_chunks):
+                    financial_chunk_with_prefix = _prefix("Financial Summary - All Bidders", "Combined Financial Analysis", chunk)
+                    all_chunks.append(financial_chunk_with_prefix)
+                    print(f"DEBUG: Added financial summary chunk {i+1}: {len(financial_chunk_with_prefix)} chars")
+                
+                print(f"DEBUG: ✅ Added {len(financial_chunks)} financial summary chunks to chatbot knowledge base")
+
+                # Also add per-company financial summaries so they can be retrieved per bidder
                 try:
-                    financial_text = generate_financial_text_summary(company)
-                    if financial_text:
-                        print(f"DEBUG: Generated financial text for {company_name}: {len(financial_text)} chars")
-                        # Create financial data chunks
-                        financial_chunks = chunk_text(financial_text)[:max_per_file]
-                        print(f"DEBUG: Created {len(financial_chunks)} financial chunks for {company_name}")
-                        for ch in financial_chunks:
-                            all_chunks.append(_prefix(f"Financial Data from {company_name}", company['financials']['name'], ch))
-                        print(f"DEBUG: Added financial chunks for {company_name}")
-                        # Company already in companies set from document processing above
-                    else:
-                        print(f"DEBUG: No financial text generated for {company_name}")
+                    # Identify company columns like "Company Name\n(AED)"
+                    columns = financial_df.columns.tolist()
+                    company_cols = [c for c in columns if c.endswith("\n(AED)")]
+                    per_company_added = 0
+                    for col in company_cols:
+                        company_name = col.split("\n")[0].strip()
+                        # Build a compact summary for this company
+                        lines = [
+                            f"FINANCIAL SUMMARY FOR {company_name}",
+                            "- Source: Combined Summary CSV",
+                        ]
+                        # Total (from SUB TOTAL row if present)
+                        try:
+                            subtotal_rows = financial_df[financial_df['Section Description'].str.upper() == 'SUB TOTAL']
+                            if not subtotal_rows.empty:
+                                total_val = str(subtotal_rows.iloc[0][col])
+                                if total_val and total_val.strip():
+                                    lines.append(f"- Total: AED {total_val}")
+                        except Exception:
+                            pass
+
+                        lines.append("")
+                        lines.append("Section breakdown:")
+                        # Iterate sections A-L with non-empty values
+                        try:
+                            section_rows = financial_df[financial_df['Section No.'].astype(str).str.len() <= 3]
+                        except Exception:
+                            section_rows = financial_df
+                        for _, r in section_rows.iterrows():
+                            sec = str(r.get('Section Description', '')).strip()
+                            if not sec or sec.upper() == 'SUB TOTAL':
+                                continue
+                            val = str(r.get(col, '')).strip()
+                            if val:
+                                lines.append(f"- {sec}: AED {val}")
+
+                        company_text = "\n".join(lines)
+                        # Chunk and add with prefix matching KB grouping logic
+                        chunks_pc = chunk_text(company_text)
+                        for j, ch in enumerate(chunks_pc):
+                            pc_chunk = _prefix(f"Financial Data from {company_name}", "Summary CSV", ch)
+                            all_chunks.append(pc_chunk)
+                        per_company_added += len(chunks_pc)
+                    print(f"DEBUG: ✅ Added per-company financial chunks: {per_company_added}")
                 except Exception as e:
-                    print(f"ERROR: Failed to process financial data for {company_name}: {e}")
+                    print(f"ERROR: Failed to add per-company financial summaries: {e}")
             else:
-                print(f"DEBUG: {company_name} has no financial data")
+                print("DEBUG: ❌ No valid financial DataFrame available")
+        except Exception as e:
+            print(f"ERROR: Failed to process financial summary for chatbot: {e}")
+            import traceback
+            print(f"ERROR: Traceback: {traceback.format_exc()}")
     else:
-        print("DEBUG: No companies found in session state for financial data")
+        print("DEBUG: ❌ No combined financial summary available in session state")
+
+    return all_chunks, sorted(companies)
 
     return all_chunks, sorted(companies)
 
@@ -986,7 +1227,7 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
 
     def _do():
         if DEBUG:
-            debug_print("Starting chunk creation...")
+            debug_print("Starting chunk creation...", show_in_ui=False)
             start_time = time.time()
             
         chunks, companies = make_chunks_from_uploads(uploaded_docs)
@@ -1011,19 +1252,51 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
             first_line = ch.split('\n')[0] if ch else ""
             print(f"  [{i}]: {first_line}")
         
-        # Count chunks by company with corrected regex
+        # Count chunks by company and type with corrected regex
         import re
         by_company = {}
-        for i, ch in enumerate(chunks):
-            # Match the actual format: [Tender Response from Company: filename]
-            m = re.match(r'\[Tender Response from (.+?):', ch)
-            if m:
-                company = m.group(1)
-                by_company.setdefault(company, []).append(i)
+        financial_chunks = 0
+        rfp_chunks = 0
+        guidelines_chunks = 0
         
-        print("DEBUG: KB chunk counts by company")
+        for i, ch in enumerate(chunks):
+            # Match different chunk types
+            if ch.startswith('[Tender Response from'):
+                m = re.match(r'\[Tender Response from (.+?):', ch)
+                if m:
+                    company = m.group(1)
+                    by_company.setdefault(company, []).append(i)
+            elif ch.startswith('[Financial Data from'):
+                financial_chunks += 1
+                m = re.match(r'\[Financial Data from (.+?):', ch)
+                if m:
+                    company = m.group(1)
+                    by_company.setdefault(company + " (Financial)", []).append(i)
+            elif ch.startswith('[Financial Summary - All Bidders:'):
+                # Track global financial summary separately using key '(Financial Summary)'
+                by_company.setdefault('(Financial Summary)', []).append(i)
+            elif ch.startswith('[RFP'):
+                rfp_chunks += 1
+            elif ch.startswith('[Guidelines'):
+                guidelines_chunks += 1
+        
+        print("DEBUG: KB chunk counts by company and type")
         for c in companies:
-            print(f"- {c}: {len(by_company.get(c, []))} chunks")
+            tender_count = len(by_company.get(c, []))
+            financial_count = len(by_company.get(c + " (Financial)", []))
+            print(f"- {c}: {tender_count} tender chunks, {financial_count} financial chunks")
+        
+        print(f"DEBUG: Special chunks - RFP: {rfp_chunks}, Guidelines: {guidelines_chunks}, Financial total: {financial_chunks}")
+        
+        # Show financial chunk previews
+        if financial_chunks > 0:
+            print("DEBUG: Financial chunk previews:")
+            for i, ch in enumerate(chunks):
+                if ch.startswith('[Financial Data from'):
+                    preview = ch[:200] + "..." if len(ch) > 200 else ch
+                    print(f"  Financial chunk {i}: {preview}")
+        else:
+            print("DEBUG: ❌ No financial chunks found in final KB!")
         
         # Also print what patterns we actually found
         print("DEBUG: Regex matches found:")
@@ -1037,7 +1310,7 @@ def build_kb(uploaded_docs: dict, show_ui: bool = False) -> bool:
             })
             
             embed_start = time.time()
-            debug_print("Building embeddings...")
+            debug_print("Building embeddings...", show_in_ui=False)
         
         index = build_index_cached(tuple(chunks))
         
@@ -1152,6 +1425,18 @@ def generate_report_tab():
                                 key="rfp_uploader", label_visibility="collapsed")
     if rfp_file:
         st.session_state.uploaded_documents["rfp"] = {"name": rfp_file.name, "content": rfp_file.getvalue()}
+
+    # Guidelines Document Upload (Optional)
+    st.markdown("**Evaluation Guidelines** *(Optional)*")
+    guidelines_file = st.file_uploader(
+        "Upload evaluation guidelines document (PDF, DOC, DOCX, TXT)", 
+        type=["pdf", "doc", "docx", "txt"],
+        key="guidelines_uploader", 
+        label_visibility="collapsed",
+        help="Upload a document containing your custom evaluation criteria and risk guidelines that the AI should follow when analyzing tenders."
+    )
+    if guidelines_file:
+        st.session_state.uploaded_documents["guidelines"] = {"name": guidelines_file.name, "content": guidelines_file.getvalue()}
 
     st.divider()
 
@@ -1288,6 +1573,12 @@ def generate_report_tab():
         else:
             st.write("**RFP:** Not uploaded")
             
+        # Show guidelines if uploaded
+        if ud.get("guidelines"):
+            st.write(f"**Guidelines:** {ud['guidelines']['name']}")
+        else:
+            st.write("**Guidelines:** None (optional)")
+            
         if st.session_state.companies:
             st.write(f"**Companies:** {len(st.session_state.companies)} companies with {len(ud.get('tenders', []))} total documents")
             for company_idx, company in enumerate(st.session_state.companies):
@@ -1335,6 +1626,12 @@ def generate_report_tab():
 
     st.divider()
     st.subheader("Run analysis")
+    
+    # Guidelines status (optional, can be commented out)
+    # if ud.get("guidelines"):
+    #     st.info(f"✅ **Custom evaluation guidelines loaded:** {ud['guidelines']['name']} - The AI will apply these criteria when analyzing all bidders.")
+    # else:
+    #     st.info("💡 **Tip:** Upload evaluation guidelines above to apply custom risk criteria and scoring standards to your tender analysis.")
 
     ud = st.session_state.uploaded_documents
     
@@ -1401,6 +1698,7 @@ def generate_report_tab():
                                 "content": tender_content
                             })
                         except Exception as e:
+                            import traceback
                             print(f"DEBUG: ❌ Tender {i+1} loading failed: {e}")
                             print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
                             st.error(f"Error loading tender {t['name']}: {str(e)}")
@@ -1606,7 +1904,58 @@ def generate_report_tab():
                         print(f"DEBUG: Financial data length: {len(str(financial_data))}")
                         print(f"DEBUG: Tender data count: {len(tender_data)}")
                         
-                        results = compare_and_recommend(rfp_txt, tender_data, financial_data, get_response)
+                        # Extract guidelines text for report generation
+                        guidelines_text = extract_guidelines_text(st.session_state.uploaded_documents)
+                        if guidelines_text:
+                            print(f"DEBUG: Guidelines text length: {len(guidelines_text)}")
+                        else:
+                            print("DEBUG: No guidelines text provided")
+                        
+                        # Debug function call parameters
+                        print(f"DEBUG: About to call compare_and_recommend with:")
+                        print(f"  - rfp_text length: {len(rfp_txt)}")
+                        print(f"  - tender_data count: {len(tender_data)}")
+                        print(f"  - financial_data type: {type(financial_data)}")
+                        print(f"  - llm_function: {get_response}")
+                        print(f"  - guidelines_text length: {len(guidelines_text) if guidelines_text else 0}")
+                        
+                        # Call compare_and_recommend with guidelines
+                        print("DEBUG: Calling compare_and_recommend with guidelines...")
+                        print(f"DEBUG: Guidelines text available: {bool(guidelines_text)}")
+                        if guidelines_text:
+                            print(f"DEBUG: Guidelines length: {len(guidelines_text)} characters")
+                            print(f"DEBUG: Guidelines preview: {guidelines_text[:200]}...")
+                        
+                        # Force fresh import to avoid caching issues
+                        try:
+                            import importlib
+                            from core import analysis
+                            importlib.reload(analysis)
+                            from core.analysis import compare_and_recommend
+                            
+                            # Check function signature
+                            import inspect
+                            sig = inspect.signature(compare_and_recommend)
+                            print(f"DEBUG: Function signature: {sig}")
+                            print(f"DEBUG: Parameter count: {len(sig.parameters)}")
+                            
+                        except Exception as import_error:
+                            print(f"DEBUG: Import/signature error: {import_error}")
+                        
+                        # Call with all 5 parameters including guidelines (using keyword args to be explicit)
+                        try:
+                            results = compare_and_recommend(
+                                rfp_text=rfp_txt, 
+                                tender_data=tender_data, 
+                                financial_data=financial_data, 
+                                llm_function=get_response, 
+                                guidelines_text=guidelines_text
+                            )
+                        except TypeError as type_error:
+                            print(f"DEBUG: TypeError when calling function: {type_error}")
+                            # Fallback to 4 arguments if 5 doesn't work
+                            print("DEBUG: Falling back to 4-argument call...")
+                            results = compare_and_recommend(rfp_txt, tender_data, financial_data, get_response)
 
                         # If NewsAPI key is present, enrich results with external risk analysis at app layer too
                         try:
@@ -1650,6 +1999,7 @@ def generate_report_tab():
                         print(f"DEBUG: Results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")
                         
                     except Exception as e:
+                        import traceback
                         analysis_time = time.time() - analysis_start_time
                         print(f"DEBUG: ❌ compare_and_recommend failed after {analysis_time:.1f} seconds: {e}")
                         print(f"DEBUG: ❌ Traceback: {traceback.format_exc()}")
@@ -1685,7 +2035,7 @@ def generate_report_tab():
 
                 except Exception as e:
                     error_msg = f"Error during analysis: {e}"
-                    debug_error("Analysis failed", e)
+                    debug_error("Analysis failed", e, show_in_ui=False)
                     st.error(error_msg)
     else:
         # Show specific error message based on what's missing
@@ -1794,6 +2144,31 @@ def simple_text_search(query: str, chunks: List[str], max_results: int = 5) -> s
     hits = [c for _, c in scored[:max_results]]
     return "\n\n---\n\n".join(hits)
 
+def retrieve_subset(query: str, allowed_indices: List[int], chunks: List[str], index, embed_fn, k: int = 6) -> Dict[str, Any]:
+    """Retrieve using the global FAISS index, but constrain results to a subset of chunk indices.
+    Falls back to keyword search if no semantic hits land in the allowed set.
+    """
+    try:
+        if not chunks or index is None or not allowed_indices:
+            return {"context": "", "indices": [], "snippets": [], "scores": []}
+        # Ask for more than k to have enough to filter
+        K = min(len(chunks), max(len(allowed_indices) * 2, max(k * 3, 20)))
+        hits = retrieve(query, chunks, index, embed_fn, k=K)
+        ids = hits.get("indices", [])
+        filtered_ids = [i for i in ids if i in allowed_indices]
+        if not filtered_ids:
+            allowed_chunks = [chunks[i] for i in allowed_indices]
+            ctx = simple_text_search(query, allowed_chunks, max_results=k)
+            return {"context": ctx, "indices": [], "snippets": [], "scores": []}
+        take = filtered_ids[:k]
+        snips = [chunks[i] for i in take]
+        return {"context": "\n\n---\n\n".join(snips), "indices": take, "snippets": snips, "scores": []}
+    except Exception:
+        # Safe fallback
+        allowed_chunks = [chunks[i] for i in allowed_indices]
+        ctx = simple_text_search(query, allowed_chunks, max_results=k)
+        return {"context": ctx, "indices": [], "snippets": [], "scores": []}
+
 def test_financial_chunks_integration():
     """Test function to verify financial data is included in chatbot chunks"""
     if not hasattr(st.session_state, 'companies') or not st.session_state.companies:
@@ -1849,18 +2224,18 @@ def chatbot_tab():
     # Enhanced debugging for financial data chunks
     if kb.get("by_company"):
         print("DEBUG: KB coverage by bidder (chatbot_tab)")
-        financial_chunks = 0
+        financial_chunks_total = 0
         for c in companies:
-            count = len(kb['by_company'].get(c, []))
-            # Count financial chunks
-            company_chunks = [chunks[i] for i in kb['by_company'].get(c, [])]
-            financial_count = len([ch for ch in company_chunks if "Financial Data from" in ch])
+            tender_idx = kb['by_company'].get(c, [])
+            fin_idx = kb['by_company'].get(c + " (Financial)", [])
+            tender_count = len(tender_idx)
+            financial_count = len(fin_idx)
+            financial_chunks_total += financial_count
             if financial_count > 0:
-                financial_chunks += financial_count
-                print(f"- {c}: {count} chunks ({financial_count} financial)")
+                print(f"- {c}: {tender_count} chunks ({financial_count} financial)")
             else:
-                print(f"- {c}: {count} chunks (no financial data)")
-        print(f"DEBUG: Total financial chunks in KB: {financial_chunks}")
+                print(f"- {c}: {tender_count} chunks (no financial data)")
+        print(f"DEBUG: Total financial chunks in KB: {financial_chunks_total}")
     else:
         print("DEBUG: No by_company data available in KB")
 
@@ -1904,7 +2279,7 @@ def chatbot_tab():
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                debug_print(f"Processing question: {question}")
+                debug_print(f"Processing question: {question}", show_in_ui=False)
                 question_start = time.time()
                 
                 # Balanced retrieval: get chunks from RFP + each company
@@ -1912,39 +2287,58 @@ def chatbot_tab():
                 
                 # Safety check: ensure we have valid chunks and index
                 if not chunks or not index:
-                    debug_print("Warning: No chunks or index available, using fallback search")
+                    debug_print("Warning: No chunks or index available, using fallback search", show_in_ui=False)
                     context = simple_text_search(question, chunks, max_results=CHAT_RETRIEVAL_K)
                 else:
                     # 1. Get RFP chunks (2-3 relevant chunks)
-                    rfp_chunks = [ch for ch in chunks if ch.startswith("[RFP Document:")]
-                    if rfp_chunks and index is not None:
+                    rfp_indices = [i for i, ch in enumerate(chunks) if ch.startswith("[RFP Document:")]
+                    if rfp_indices and index is not None:
                         try:
-                            rfp_hits = retrieve(question, rfp_chunks, index, embed_texts, k=min(3, len(rfp_chunks)))
+                            rfp_hits = retrieve_subset(question, rfp_indices, chunks, index, embed_texts, k=min(3, len(rfp_indices)))
                             if rfp_hits["context"]:
                                 context_parts.append("=== RFP REQUIREMENTS ===\n" + rfp_hits["context"])
                             if DEBUG:
-                                st.sidebar.write(f"📄 RFP chunks: {len(rfp_chunks)} → {len(rfp_hits.get('context', '').split('---')) if rfp_hits.get('context') else 0}")
+                                st.sidebar.write(f"📄 RFP chunks: {len(rfp_indices)} → {len(rfp_hits.get('context', '').split('---')) if rfp_hits.get('context') else 0}")
                         except Exception as e:
                             if DEBUG:
                                 st.sidebar.error(f"❌ RFP retrieval error: {e}")
                             print(f"DEBUG: Error retrieving RFP chunks: {e}")
                     
-                    # 2. Get commercial chunks if relevant
-                    commercial_chunks = [ch for ch in chunks if ch.startswith("[Commercial Document:")]
-                    if commercial_chunks and any(term in question.lower() for term in ['cost', 'price', 'budget', 'financial', 'commercial']):
+                    # 2. Get financial/ commercial chunks if relevant
+                    is_fin_q = any(term in question.lower() for term in ['cost', 'price', 'budget', 'financial', 'commercial', 'total', 'breakdown'])
+                    commercial_idx = [i for i, ch in enumerate(chunks) if ch.startswith("[Commercial Document:")]
+                    financial_all_idx = [i for i, ch in enumerate(chunks) if ch.startswith("[Financial Summary - All Bidders:")]
+                    per_company_fin_idx = [i for i, ch in enumerate(chunks) if ch.startswith("[Financial Data from ")]
+                    if is_fin_q and index is not None:
+                        try:
+                            # Prefer per-company first, then all-bidders, then commercial
+                            merged_fin_idx = per_company_fin_idx + financial_all_idx + commercial_idx
+                            fin_hits = retrieve_subset(question, merged_fin_idx, chunks, index, embed_texts, k=min(6, len(merged_fin_idx)))
+                            if fin_hits["context"]:
+                                context_parts.append("=== FINANCIAL DATA ===\n" + fin_hits["context"])
+                            if DEBUG:
+                                st.sidebar.write(f"💰 Financial chunks: per-company={len(per_company_fin_idx)}, all-bidders={len(financial_all_idx)}, commercial={len(commercial_idx)}")
+                        except Exception as e:
+                            if DEBUG:
+                                st.sidebar.error(f"❌ Financial retrieval error: {e}")
+                            print(f"DEBUG: Error retrieving financial chunks: {e}")
+                    
+                    # 3. Get guidelines chunks if relevant
+                    guidelines_idx = [i for i, ch in enumerate(chunks) if ch.startswith("[Evaluation Guideline:")]
+                    if guidelines_idx and any(term in question.lower() for term in ['guideline', 'criteria', 'risk', 'evaluation', 'assess', 'score']):
                         if index is not None:
                             try:
-                                comm_hits = retrieve(question, commercial_chunks, index, embed_texts, k=min(2, len(commercial_chunks)))
-                                if comm_hits["context"]:
-                                    context_parts.append("=== COMMERCIAL DATA ===\n" + comm_hits["context"])
+                                guidelines_hits = retrieve_subset(question, guidelines_idx, chunks, index, embed_texts, k=min(3, len(guidelines_idx)))
+                                if guidelines_hits["context"]:
+                                    context_parts.append("=== EVALUATION GUIDELINES ===\n" + guidelines_hits["context"])
                                 if DEBUG:
-                                    st.sidebar.write(f"💰 Commercial chunks: {len(commercial_chunks)} found")
+                                    st.sidebar.write(f"📋 Guidelines chunks: {len(guidelines_idx)} found")
                             except Exception as e:
                                 if DEBUG:
-                                    st.sidebar.error(f"❌ Commercial retrieval error: {e}")
-                                print(f"DEBUG: Error retrieving commercial chunks: {e}")
+                                    st.sidebar.error(f"❌ Guidelines retrieval error: {e}")
+                                print(f"DEBUG: Error retrieving guidelines chunks: {e}")
                     
-                    # 3. Get balanced chunks per company (2 chunks each)
+                    # 4. Get balanced chunks per company (2 chunks each)
                     by_company = kb.get("by_company", {})
                     if by_company:
                         context_parts.append("=== COMPANY RESPONSES ===")
@@ -1954,29 +2348,29 @@ def chatbot_tab():
                             company_indices = by_company.get(company, [])
                             if company_indices:
                                 try:
-                                    company_chunks = [chunks[i] for i in company_indices if i < len(chunks)]
-                                    if company_chunks:
+                                    company_chunks_idx = [i for i in company_indices if i < len(chunks)]
+                                    if company_chunks_idx:
                                         # Use different strategies based on company chunk count
-                                        if len(company_chunks) < 50:
+                                        if len(company_chunks_idx) < 50:
                                             # Small companies: use keyword search for better coverage
-                                            company_context = simple_text_search(question, company_chunks, max_results=2)
+                                            company_context = simple_text_search(question, [chunks[i] for i in company_chunks_idx], max_results=2)
                                             if company_context:
                                                 context_parts.append(f"--- {company} ---\n" + company_context)
                                                 company_results[company] = "keyword"
                                             else:
                                                 # Fallback: include first chunk to ensure representation
-                                                context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                                context_parts.append(f"--- {company} ---\n" + chunks[company_chunks_idx[0]])
                                                 company_results[company] = "fallback"
                                         else:
                                             # Large companies: use semantic search
                                             if index is not None:
-                                                company_hits = retrieve(question, company_chunks, index, embed_texts, k=min(2, len(company_chunks)))
+                                                company_hits = retrieve_subset(question, company_chunks_idx, chunks, index, embed_texts, k=min(2, len(company_chunks_idx)))
                                                 if company_hits["context"]:
                                                     context_parts.append(f"--- {company} ---\n" + company_hits["context"])
                                                     company_results[company] = "semantic"
                                                 else:
                                                     # Fallback: include first chunk
-                                                    context_parts.append(f"--- {company} ---\n" + company_chunks[0])
+                                                    context_parts.append(f"--- {company} ---\n" + chunks[company_chunks_idx[0]])
                                                     company_results[company] = "fallback"
                                 except Exception as e:
                                     if DEBUG:
@@ -2073,6 +2467,7 @@ Question: {question}
                     st.sidebar.write(f"📏 Answer: {len(answer)} chars")
                 
             except Exception as e:
+                import traceback
                 error_msg = f"Error during Q&A: {e}"
                 if DEBUG:
                     st.sidebar.error(f"💥 {error_msg}")
@@ -2089,19 +2484,19 @@ Question: {question}
 # ------------------------------- Main -------------------------------
 def main():
     try:
-        debug_print("=== APPLICATION STARTUP ===")
-        debug_print(f"Python version: {sys.version}")
-        debug_print(f"Streamlit version: {st.__version__}")
-        debug_print(f"Current directory: {os.getcwd()}")
+        debug_print("=== APPLICATION STARTUP ===", show_in_ui=False)
+        debug_print(f"Python version: {sys.version}", show_in_ui=False)
+        debug_print(f"Streamlit version: {st.__version__}", show_in_ui=False)
+        debug_print(f"Current directory: {os.getcwd()}", show_in_ui=False)
         
         init_session_state()
-        debug_print("Session state initialized successfully")
+        debug_print("Session state initialized successfully", show_in_ui=False)
         
         tab = st.session_state.active_tab
-        debug_print(f"Active tab: {tab}")
+        debug_print(f"Active tab: {tab}", show_in_ui=False)
 
         if tab == "Home":
-            debug_print("Loading Home tab")
+            debug_print("Loading Home tab", show_in_ui=False)
             home_tab()
         elif tab == "Generate Report":
             debug_print("Loading Generate Report tab")
@@ -2129,6 +2524,7 @@ def main():
             debug_print("OPENAI_API_KEY found in environment")
             
     except Exception as e:
+        import traceback
         error_msg = f"Application Error: {e}"
         print(f"CRITICAL ERROR: {error_msg}")
         print(f"Full traceback:\n{traceback.format_exc()}")
@@ -2156,6 +2552,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        import traceback
         error_traceback = traceback.format_exc()
         print(f"❌ CRITICAL ERROR IN MAIN: {e}")
         print(f"❌ TRACEBACK:\n{error_traceback}")

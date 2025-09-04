@@ -10,16 +10,16 @@ If a field is unknown, return an empty string "" (not “N/A”).
 
 Keep table-oriented fields concise (no newlines). Max lengths:
 
-- comparison_snapshot.technical_fit ≤ 180 chars
-- comparison_snapshot.team ≤ 160 chars
-- technical_analysis.detailed_assessments.compliance_with_specs ≤ 180 chars
-- technical_analysis.detailed_assessments.innovation_factor ≤ 140 chars
-- team_and_capacity_analysis.assessments.project_manager_credentials ≤ 140 chars
-- team_and_capacity_analysis.assessments.relevant_experience ≤ 160 chars
-- timeline_and_delivery_analysis.schedule_evaluation.proposed_timeline ≤ 140 chars
-- timeline_and_delivery_analysis.schedule_evaluation.delivery_confidence ≤ 140 chars
-- compliance_and_regulatory_analysis.assessments.regulatory_compliance ≤ 180 chars
-- compliance_and_regulatory_analysis.assessments.documentation_completeness ≤ 160 chars
+- comparison_snapshot.technical_fit ≤ 250 chars
+- comparison_snapshot.team ≤ 220 chars
+- technical_analysis.detailed_assessments.compliance_with_specs ≤ 250 chars
+- technical_analysis.detailed_assessments.innovation_factor ≤ 180 chars
+- team_and_capacity_analysis.assessments.project_manager_credentials ≤ 180 chars
+- team_and_capacity_analysis.assessments.relevant_experience ≤ 200 chars
+- timeline_and_delivery_analysis.schedule_evaluation.proposed_timeline ≤ 180 chars
+- timeline_and_delivery_analysis.schedule_evaluation.delivery_confidence ≤ 180 chars
+- compliance_and_regulatory_analysis.assessments.regulatory_compliance ≤ 300 chars
+- compliance_and_regulatory_analysis.assessments.documentation_completeness ≤ 250 chars
 
 Where a field expects text, do not return nested objects; use compact strings. Arrays should contain short strings (≤5 items). Do not use ellipses to shorten words; keep single lines concise.
 
@@ -40,7 +40,12 @@ Tender Response Content (full content per bidder):
 Financial Analysis Data (structured JSON or text):
 {{commercial_text}}
 
+Custom Evaluation Guidelines:
+{{guidelines}}
+
 If financial data is structured JSON (e.g., with sheets[*].financial_summary / sections per bidder), extract bidder subtotals, cost per sqm, and notable section outliers. Calculate differences and % variances between bidders when possible. If only text is available, use the clearest numbers you can find.
+
+**IMPORTANT**: If custom evaluation guidelines are provided above, apply them systematically throughout your analysis. Use these guidelines to inform your scoring methodology, risk assessment criteria, and final recommendations across all evaluation categories (technical, financial, compliance, and risk).
 
 JSON SCHEMA (return exactly this structure)
 
@@ -122,12 +127,11 @@ JSON SCHEMA (return exactly this structure)
 {
 "bidder": "Bidder name",
 "regulatory_compliance": "≤180 chars (DMCC, DM, DCD, etc.)",
-"documentation_completeness": "≤160 chars",
+"documentation_completeness": "≤250 chars with detailed assessment",
 "certification_status": "ISO, LEED, etc. (concise)",
 "insurance_adequacy": "Coverage summary (concise)",
 "legal_compliance": "Contractual and legal adherence (concise)",
-"compliance_gaps": ["≤5 short gaps"],
-"compliance_score": "x/10 – short justification"
+"compliance_score": "x/10 – detailed justification with specific observations"
 }
 ]
 },

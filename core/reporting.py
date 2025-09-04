@@ -201,11 +201,10 @@ def build_markdown(data: dict) -> str:
     comp_rows = comp.get("assessments", []) or []
     if comp_rows:
         md.append("\n## Compliance")
-        md.append("| Bidder | Compliance Score | Key Gaps |")
-        md.append("| --- | --- | --- |")
+        md.append("| Bidder | Compliance Score & Details |")
+        md.append("| --- | --- |")
         for r in comp_rows:
-            gaps = ", ".join((r.get("compliance_gaps") or [])[:2])
-            md.append(f"| {r.get('bidder','')} | {r.get('compliance_score','')} | {gaps} |")
+            md.append(f"| {r.get('bidder','')} | {r.get('compliance_score','')} |")
         
         # Add explanatory paragraph
         if comp.get("table_summary"):
@@ -287,11 +286,6 @@ def build_markdown(data: dict) -> str:
                 bullets.append(f"**Commercial Position** — {finr.get('total_cost')} ({finr.get('value_tag','')}) - {finr.get('value_for_money_assessment')} ({finr.get('financial_score','')})")
             elif finr.get("total_cost"): 
                 bullets.append(f"**Commercial** — {finr.get('total_cost')} ({finr.get('value_tag','')}, {finr.get('financial_score','')})")
-            
-            # Compliance gaps if significant
-            gaps = (compr.get("compliance_gaps") or [])[:2]
-            if gaps: 
-                bullets.append(f"**Compliance Considerations** — Key gaps include: {', '.join(gaps)}")
             
             for s in bullets:
                 md.append(f"- {s}")
@@ -441,8 +435,8 @@ def build_pdf_report(data: dict) -> bytes:
         for r in snap:
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("technical_fit",""), 180),
-                _truncate_safe(r.get("team",""), 160),
+                _truncate_safe(r.get("technical_fit",""), 240),
+                _truncate_safe(r.get("team",""), 200),
             ])
         # widen Team column
         colw = [0.22*doc.width, 0.40*doc.width, 0.38*doc.width]
@@ -458,9 +452,9 @@ def build_pdf_report(data: dict) -> bytes:
         for r in tech_rows:
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("technical_score",""), 40),
-                _truncate_safe(r.get("compliance_with_specs",""), 80),
-                _truncate_safe(r.get("innovation_factor",""), 70),
+                _truncate_safe(r.get("technical_score",""), 60),
+                _truncate_safe(r.get("compliance_with_specs",""), 120),
+                _truncate_safe(r.get("innovation_factor",""), 100),
             ])
         colw = [0.22*doc.width, 0.18*doc.width, 0.32*doc.width, 0.28*doc.width]
         story.append(Spacer(1, 6))
@@ -480,9 +474,9 @@ def build_pdf_report(data: dict) -> bytes:
         for r in team_rows:
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("team_score",""), 40),
-                _truncate_safe(r.get("project_manager_credentials",""), 80),
-                _truncate_safe(r.get("relevant_experience",""), 90),
+                _truncate_safe(r.get("team_score",""), 60),
+                _truncate_safe(r.get("project_manager_credentials",""), 120),
+                _truncate_safe(r.get("relevant_experience",""), 130),
             ])
         colw = [0.22*doc.width, 0.18*doc.width, 0.30*doc.width, 0.30*doc.width]
         story.append(Spacer(1, 6))
@@ -505,9 +499,9 @@ def build_pdf_report(data: dict) -> bytes:
             val_tag = r.get("value_tag","") or computed_tags.get(r.get("bidder",""), "")
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("total_cost",""), 28),
-                _truncate_safe(r.get("financial_score",""), 40),
-                _truncate_safe(val_tag, 26),
+                _truncate_safe(r.get("total_cost",""), 35),
+                _truncate_safe(r.get("financial_score",""), 60),
+                _truncate_safe(val_tag, 40),
             ])
         colw = [0.28*doc.width, 0.22*doc.width, 0.24*doc.width, 0.26*doc.width]
         story.append(Spacer(1, 6))
@@ -527,9 +521,9 @@ def build_pdf_report(data: dict) -> bytes:
         for r in tl_rows:
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("proposed_timeline",""), 90),
-                _truncate_safe(r.get("timeline_score",""), 40),
-                _truncate_safe(r.get("delivery_confidence",""), 90),
+                _truncate_safe(r.get("proposed_timeline",""), 120),
+                _truncate_safe(r.get("timeline_score",""), 60),
+                _truncate_safe(r.get("delivery_confidence",""), 120),
             ])
         colw = [0.22*doc.width, 0.34*doc.width, 0.18*doc.width, 0.26*doc.width]
         story.append(Spacer(1, 6))
@@ -541,19 +535,17 @@ def build_pdf_report(data: dict) -> bytes:
             story.append(Spacer(1, 4))
             story.append(Paragraph(_md_inline_to_rl(tl.get("table_summary")), Body))
 
-    # 6) Compliance (Key Gaps brief)
+    # 6) Compliance (Score & Details only)
     comp = data.get("compliance_and_regulatory_analysis", {}) or {}
     comp_rows = comp.get("assessments", []) or []
     if comp_rows:
-        rows = [["Bidder", "Compliance Score", "Key Gaps (max 2)"]]
+        rows = [["Bidder", "Compliance Score & Details"]]
         for r in comp_rows:
-            gaps = ", ".join((r.get("compliance_gaps") or [])[:2])
             rows.append([
                 _truncate_safe(r.get("bidder",""), 30),
-                _truncate_safe(r.get("compliance_score",""), 40),
-                _truncate_safe(gaps, 100),
+                _truncate_safe(r.get("compliance_score",""), 140),
             ])
-        colw = [0.28*doc.width, 0.20*doc.width, 0.52*doc.width]
+        colw = [0.28*doc.width, 0.72*doc.width]
         story.append(Spacer(1, 6))
         story.append(Paragraph(_md_inline_to_rl("Compliance Summary"), H2))
         story.append(_make_table(rows, colw=colw))
@@ -644,11 +636,6 @@ def build_pdf_report(data: dict) -> bytes:
                 bullets.append(f"**Commercial Position** — {finr.get('total_cost')} - {finr.get('value_for_money_assessment')}")
             elif finr.get("total_cost"): 
                 bullets.append(f"**Commercial** — {finr.get('total_cost')}")
-            
-            # Compliance gaps if significant
-            gaps = (compr.get("compliance_gaps") or [])[:2]
-            if gaps: 
-                bullets.append(f"**Compliance Considerations** — Key gaps: {', '.join(gaps)}")
             
             if bullets:
                 blk = [Paragraph(_md_inline_to_rl(b), H3)]
